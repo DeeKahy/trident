@@ -23,7 +23,7 @@ This file is the source of truth. To track it on GitHub:
 
 ---
 
-## Phase 0 — Spike the architecture ✅
+## Phase 0 — Spike the architecture (done)
 
 Prove the risky part: Rust↔frontend communication, git process spawning, and the
 dev loop working together as one vertical slice.
@@ -92,7 +92,7 @@ guided commit→sync loop on paper first, then implement. The moment this works,
 - [ ] Branch create / switch / delete
 - [ ] Fetch / pull / push buttons with progress and honest error reporting
 - [ ] The guided sync loop: one obvious "what do I do next" path
-- [ ] Switch daily driving to Trident (dogfooding milestone 🎉)
+- [ ] Switch daily driving to Trident (the dogfooding milestone)
 
 ## Phase 4 — The genuinely hard parts
 

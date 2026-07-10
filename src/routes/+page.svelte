@@ -239,7 +239,7 @@
                 {/each}
               {/if}
               {#if changeCount === 0}
-                <div class="empty-note">Working tree clean ✓</div>
+                <div class="empty-note">Working tree clean</div>
               {/if}
             {/if}
           </div>

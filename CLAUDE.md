@@ -11,8 +11,8 @@ completes them.
 - **NEVER add `Co-Authored-By`, "Generated with", or any other AI-attribution
   trailer or marker to commits, PR bodies, or code.** Commit messages are plain
   and describe the change only.
-- **No AI-sounding writing, anywhere.** No em-dashes in commits, docs, comments,
-  or UI copy. Write plainly and concretely. Avoid the usual tells: "delve",
+- **No AI-sounding writing, anywhere.** No em-dashes and no emoji in commits,
+  docs, comments, or UI copy. Write plainly and concretely. Avoid the usual tells: "delve",
   "robust", "seamless", "comprehensive", "It's not just X, it's Y" constructions,
   and filler enthusiasm.
 - **The git-logic test suite stays green.** No exceptions.
