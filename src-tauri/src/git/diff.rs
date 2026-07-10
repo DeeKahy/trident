@@ -1,0 +1,114 @@
+//! Diffs as raw unified-diff text. The frontend renders the text directly,
+//! so these functions stay string-in/string-out; structured diff parsing
+//! can come later when the UI needs side-by-side or hunk staging.
+
+use std::path::Path;
+
+use serde::Deserialize;
+
+use super::{run_git, run_git_with_ok_codes, Result};
+
+/// Which version of a file to diff. Serialized lowercase to match the
+/// string the frontend sends (`"worktree" | "staged" | "untracked"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiffMode {
+    /// Unstaged changes: work tree vs index.
+    Worktree,
+    /// Staged changes: index vs HEAD.
+    Staged,
+    /// A file git doesn't know yet, shown as an all-additions diff.
+    Untracked,
+}
+
+/// Unified diff for a single file in the given mode.
+pub fn diff_file(repo: &Path, path: &str, mode: DiffMode) -> Result<String> {
+    // `git diff` exits 1 when differences exist under --no-index; accept it.
+    match mode {
+        DiffMode::Worktree => {
+            run_git_with_ok_codes(repo, &["diff", "--no-color", "--", path], &[0, 1])
+        }
+        DiffMode::Staged => {
+            run_git_with_ok_codes(repo, &["diff", "--no-color", "--cached", "--", path], &[0, 1])
+        }
+        // git special-cases the literal path "/dev/null" in --no-index mode
+        // (even on Windows), yielding an all-additions diff for a new file.
+        DiffMode::Untracked => run_git_with_ok_codes(
+            repo,
+            &["diff", "--no-color", "--no-index", "/dev/null", path],
+            &[0, 1],
+        ),
+    }
+}
+
+/// Full patch for a commit (what `git show` prints, without the header).
+pub fn commit_diff(repo: &Path, hash: &str) -> Result<String> {
+    run_git(
+        repo,
+        &["show", "--no-color", "--format=", "--patch", hash],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::testutil::TestRepo;
+
+    #[test]
+    fn worktree_diff_shows_the_edit() {
+        let repo = TestRepo::with_initial_commit();
+        repo.write("README.md", "# test repo\nnew line\n");
+        let d = diff_file(repo.path(), "README.md", DiffMode::Worktree).unwrap();
+        assert!(d.contains("+new line"), "{d}");
+        assert!(d.contains("--- a/README.md"), "{d}");
+    }
+
+    #[test]
+    fn staged_diff_is_separate_from_worktree() {
+        let repo = TestRepo::with_initial_commit();
+        repo.write("README.md", "# staged\n");
+        repo.git(&["add", "README.md"]);
+        repo.write("README.md", "# worktree\n");
+
+        let staged = diff_file(repo.path(), "README.md", DiffMode::Staged).unwrap();
+        assert!(staged.contains("+# staged"), "{staged}");
+        assert!(!staged.contains("+# worktree"), "{staged}");
+
+        let worktree = diff_file(repo.path(), "README.md", DiffMode::Worktree).unwrap();
+        assert!(worktree.contains("+# worktree"), "{worktree}");
+    }
+
+    #[test]
+    fn untracked_diff_shows_all_lines_as_additions() {
+        let repo = TestRepo::with_initial_commit();
+        repo.write("new.txt", "alpha\nbeta\n");
+        let d = diff_file(repo.path(), "new.txt", DiffMode::Untracked).unwrap();
+        assert!(d.contains("+alpha"), "{d}");
+        assert!(d.contains("+beta"), "{d}");
+    }
+
+    #[test]
+    fn unchanged_file_diffs_to_empty() {
+        let repo = TestRepo::with_initial_commit();
+        let d = diff_file(repo.path(), "README.md", DiffMode::Worktree).unwrap();
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn commit_diff_shows_the_patch() {
+        let repo = TestRepo::with_initial_commit();
+        repo.write("a.txt", "hello\n");
+        repo.git(&["add", "a.txt"]);
+        repo.commit("add a.txt");
+        let head = repo.git(&["rev-parse", "HEAD"]);
+        let d = commit_diff(repo.path(), head.trim()).unwrap();
+        assert!(d.contains("+hello"), "{d}");
+        assert!(d.contains("a.txt"), "{d}");
+    }
+
+    #[test]
+    fn commit_diff_on_bad_hash_errors() {
+        let repo = TestRepo::with_initial_commit();
+        assert!(commit_diff(repo.path(), "deadbeef").is_err());
+    }
+}
