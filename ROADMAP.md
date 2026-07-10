@@ -32,9 +32,8 @@ dev loop working together as one vertical slice.
 - [x] Scaffold Tauri + Svelte project (`npm create tauri-app`)
 - [x] Rust command that shells out to `git status`, returns structured data
 - [x] Svelte component that renders it
-- [ ] Confirm the dev loop feels good: `npm run tauri dev` hot-reloads the frontend
-      and rebuilds Rust on change *(run this locally — everything compiles and
-      tests pass, but the window itself needs human eyes)*
+- [x] Confirm the dev loop feels good: `npm run tauri dev` hot-reloads the frontend
+      and rebuilds Rust on change
 
 ## Phase 1 — Git backend as a standalone Rust layer
 
@@ -63,7 +62,7 @@ Write operations (backend only; UI comes in Phase 3):
 Infrastructure:
 - [x] `GitError` type that crosses the Tauri boundary with the real git message
 - [x] Temp-repo test harness isolated from user git config (signing, hooks, defaults)
-- [ ] CI running `cargo test` + `cargo clippy` + `svelte-check` on every push
+- [x] CI running `cargo test` + `cargo clippy` + `svelte-check` on every push
 
 ## Phase 2 — A read-only viewer
 
