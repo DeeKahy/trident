@@ -46,6 +46,28 @@ fn parse_line(line: &str) -> Option<BranchInfo> {
     })
 }
 
+/// Create a branch at HEAD; optionally switch to it.
+pub fn create_branch(repo: &Path, name: &str, checkout: bool) -> Result<()> {
+    if checkout {
+        run_git(repo, &["switch", "-c", name]).map(|_| ())
+    } else {
+        run_git(repo, &["branch", "--", name]).map(|_| ())
+    }
+}
+
+/// Switch to an existing branch. A dirty work tree that would be clobbered
+/// makes git refuse; that error is surfaced as-is.
+pub fn switch_branch(repo: &Path, name: &str) -> Result<()> {
+    run_git(repo, &["switch", name]).map(|_| ())
+}
+
+/// Delete a local branch. Without `force` this is `git branch -d`, which
+/// refuses to drop unmerged work; `force` is `-D`.
+pub fn delete_branch(repo: &Path, name: &str, force: bool) -> Result<()> {
+    let flag = if force { "-D" } else { "-d" };
+    run_git(repo, &["branch", flag, "--", name]).map(|_| ())
+}
+
 /// Parse `%(upstream:track)` output like `[ahead 1, behind 2]` or `[gone]`.
 fn parse_track(track: &str) -> (u32, u32) {
     let inner = track.trim_start_matches('[').trim_end_matches(']');
@@ -104,5 +126,66 @@ mod tests {
         let repo = TestRepo::empty();
         let all = branches(repo.path()).unwrap();
         assert!(all.is_empty());
+    }
+
+    #[test]
+    fn create_branch_without_checkout_stays_on_main() {
+        let repo = TestRepo::with_initial_commit();
+        create_branch(repo.path(), "feature", false).unwrap();
+
+        let all = branches(repo.path()).unwrap();
+        assert!(all.iter().any(|b| b.name == "feature" && !b.is_head));
+        assert!(all.iter().any(|b| b.name == "main" && b.is_head));
+    }
+
+    #[test]
+    fn create_branch_with_checkout_switches_to_it() {
+        let repo = TestRepo::with_initial_commit();
+        create_branch(repo.path(), "feature", true).unwrap();
+
+        let all = branches(repo.path()).unwrap();
+        assert!(all.iter().any(|b| b.name == "feature" && b.is_head));
+    }
+
+    #[test]
+    fn switch_branch_moves_head() {
+        let repo = TestRepo::with_initial_commit();
+        create_branch(repo.path(), "feature", false).unwrap();
+        switch_branch(repo.path(), "feature").unwrap();
+
+        let all = branches(repo.path()).unwrap();
+        assert!(all.iter().any(|b| b.name == "feature" && b.is_head));
+    }
+
+    #[test]
+    fn switch_to_missing_branch_errors() {
+        let repo = TestRepo::with_initial_commit();
+        assert!(switch_branch(repo.path(), "nope").is_err());
+    }
+
+    #[test]
+    fn delete_branch_removes_it() {
+        let repo = TestRepo::with_initial_commit();
+        create_branch(repo.path(), "doomed", false).unwrap();
+        delete_branch(repo.path(), "doomed", false).unwrap();
+
+        let all = branches(repo.path()).unwrap();
+        assert!(!all.iter().any(|b| b.name == "doomed"));
+    }
+
+    #[test]
+    fn delete_refuses_unmerged_branch_unless_forced() {
+        let repo = TestRepo::with_initial_commit();
+        create_branch(repo.path(), "unmerged", true).unwrap();
+        repo.write("only-here.txt", "x\n");
+        repo.git(&["add", "only-here.txt"]);
+        repo.commit("unmerged work");
+        switch_branch(repo.path(), "main").unwrap();
+
+        assert!(delete_branch(repo.path(), "unmerged", false).is_err());
+        delete_branch(repo.path(), "unmerged", true).unwrap();
+
+        let all = branches(repo.path()).unwrap();
+        assert!(!all.iter().any(|b| b.name == "unmerged"));
     }
 }

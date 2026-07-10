@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
   import DiffView from "$lib/DiffView.svelte";
   import {
     openRepo,
@@ -8,6 +8,18 @@
     gitBranches,
     gitDiffFile,
     gitCommitDiff,
+    gitStageFile,
+    gitUnstageFile,
+    gitStageAll,
+    gitUnstageAll,
+    gitDiscardFile,
+    gitCommit,
+    gitCreateBranch,
+    gitSwitchBranch,
+    gitDeleteBranch,
+    gitFetch,
+    gitPull,
+    gitPush,
     errorMessage,
     type RepoInfo,
     type Status,
@@ -29,6 +41,11 @@
   let diffTitle = $state("");
   let selectedKey = $state<string | null>(null);
 
+  let commitMessage = $state("");
+  let amend = $state(false);
+  let newBranchName = $state("");
+  let remoteBusy = $state<"fetch" | "pull" | "push" | null>(null);
+
   let localBranches = $derived(branches.filter((b) => !b.isRemote));
   let remoteBranches = $derived(branches.filter((b) => b.isRemote));
   let changeCount = $derived(
@@ -38,6 +55,9 @@
         status.untracked.length +
         status.conflicted.length
       : 0
+  );
+  let canCommit = $derived(
+    commitMessage.trim().length > 0 && status !== null && (status.staged.length > 0 || amend)
   );
 
   async function openFromDialog() {
@@ -49,13 +69,17 @@
     error = null;
     try {
       repo = await openRepo(path);
-      selectedKey = null;
-      diffText = "";
-      diffTitle = "";
+      clearDiff();
       await refresh();
     } catch (e) {
       error = errorMessage(e);
     }
+  }
+
+  function clearDiff() {
+    selectedKey = null;
+    diffText = "";
+    diffTitle = "";
   }
 
   async function refresh() {
@@ -70,6 +94,18 @@
     } catch (e) {
       error = errorMessage(e);
     }
+  }
+
+  /** Run a mutating action, surface its error, refresh the panes. */
+  async function act(fn: () => Promise<unknown>) {
+    if (!repo) return;
+    error = null;
+    try {
+      await fn();
+    } catch (e) {
+      error = errorMessage(e);
+    }
+    await refresh();
   }
 
   async function selectFile(path: string, mode: DiffMode) {
@@ -96,6 +132,84 @@
     }
   }
 
+  async function stageFile(path: string) {
+    await act(() => gitStageFile(repo!.path, path));
+    clearDiff();
+  }
+
+  async function unstageFile(path: string) {
+    await act(() => gitUnstageFile(repo!.path, path));
+    clearDiff();
+  }
+
+  async function discardFile(path: string, untracked: boolean) {
+    const verb = untracked ? "Delete untracked file" : "Discard changes to";
+    const ok = await confirmDialog(`${verb} "${path}"? This cannot be undone.`, {
+      title: "Trident",
+      kind: "warning",
+    });
+    if (!ok) return;
+    await act(() => gitDiscardFile(repo!.path, path, untracked));
+    clearDiff();
+  }
+
+  async function doCommit() {
+    if (!canCommit) return;
+    await act(() => gitCommit(repo!.path, commitMessage, amend));
+    if (!error) {
+      commitMessage = "";
+      amend = false;
+      clearDiff();
+    }
+  }
+
+  async function switchTo(branch: BranchInfo) {
+    if (branch.isHead || branch.isRemote) return;
+    await act(() => gitSwitchBranch(repo!.path, branch.name));
+    clearDiff();
+  }
+
+  async function createBranch() {
+    const name = newBranchName.trim();
+    if (!name) return;
+    await act(() => gitCreateBranch(repo!.path, name, true));
+    if (!error) newBranchName = "";
+  }
+
+  async function deleteBranch(branch: BranchInfo) {
+    const ok = await confirmDialog(`Delete branch "${branch.name}"?`, {
+      title: "Trident",
+      kind: "warning",
+    });
+    if (!ok || !repo) return;
+    try {
+      await gitDeleteBranch(repo.path, branch.name, false);
+    } catch (e) {
+      const message = errorMessage(e);
+      if (message.includes("not fully merged")) {
+        const force = await confirmDialog(
+          `"${branch.name}" has commits that are not merged anywhere else. Delete anyway and lose them?`,
+          { title: "Trident", kind: "warning" }
+        );
+        if (force) {
+          await act(() => gitDeleteBranch(repo!.path, branch.name, true));
+          return;
+        }
+      } else {
+        error = message;
+      }
+    }
+    await refresh();
+  }
+
+  async function remoteOp(kind: "fetch" | "pull" | "push") {
+    if (!repo || remoteBusy) return;
+    remoteBusy = kind;
+    const ops = { fetch: gitFetch, pull: gitPull, push: gitPush };
+    await act(() => ops[kind](repo!.path));
+    remoteBusy = null;
+  }
+
   function kindBadge(change: FileChange): string {
     return { modified: "M", added: "A", deleted: "D", renamed: "R", copied: "C", typechange: "T" }[
       change.kind
@@ -110,24 +224,6 @@
     });
   }
 </script>
-
-{#snippet fileList(title: string, files: FileChange[], mode: DiffMode)}
-  {#if files.length > 0}
-    <div class="group-title">{title} <span class="count">{files.length}</span></div>
-    {#each files as file (mode + file.path)}
-      <button
-        class="row"
-        class:selected={selectedKey === `${mode}:${file.path}`}
-        onclick={() => selectFile(file.path, mode)}
-      >
-        <span class="badge {file.kind}">{kindBadge(file)}</span>
-        <span class="row-label" title={file.path}>
-          {#if file.origPath}{file.origPath} → {/if}{file.path}
-        </span>
-      </button>
-    {/each}
-  {/if}
-{/snippet}
 
 {#if repo === null}
   <main class="welcome">
@@ -162,7 +258,20 @@
         {/if}
       {/if}
       <span class="spacer"></span>
-      <button onclick={refresh} title="Refresh">⟳ Refresh</button>
+      <button onclick={() => remoteOp("fetch")} disabled={remoteBusy !== null}>
+        {remoteBusy === "fetch" ? "Fetching…" : "Fetch"}
+      </button>
+      <button onclick={() => remoteOp("pull")} disabled={remoteBusy !== null}>
+        {remoteBusy === "pull" ? "Pulling…" : "Pull"}
+      </button>
+      <button onclick={() => remoteOp("push")} disabled={remoteBusy !== null}>
+        {remoteBusy === "push"
+          ? "Pushing…"
+          : status && status.branch.ahead > 0
+            ? `Push (${status.branch.ahead})`
+            : "Push"}
+      </button>
+      <button onclick={refresh} title="Refresh">⟳</button>
     </header>
 
     {#if error}<div class="error banner">{error}</div>{/if}
@@ -171,23 +280,45 @@
       <nav class="sidebar">
         <div class="group-title">Branches</div>
         {#each localBranches as branch (branch.name)}
-          <div class="row static" class:head={branch.isHead}>
-            <span class="row-label" title={branch.name}>
-              {branch.isHead ? "● " : "   "}{branch.name}
-            </span>
-            {#if branch.ahead > 0 || branch.behind > 0}
-              <span class="track">
-                {#if branch.ahead > 0}↑{branch.ahead}{/if}
-                {#if branch.behind > 0}↓{branch.behind}{/if}
+          <div class="row" class:head={branch.isHead}>
+            <button
+              class="row-main"
+              disabled={branch.isHead}
+              title={branch.isHead ? branch.name : `Switch to ${branch.name}`}
+              onclick={() => switchTo(branch)}
+            >
+              <span class="row-label">{branch.isHead ? "● " : ""}{branch.name}</span>
+              {#if branch.ahead > 0 || branch.behind > 0}
+                <span class="track">
+                  {#if branch.ahead > 0}↑{branch.ahead}{/if}
+                  {#if branch.behind > 0}↓{branch.behind}{/if}
+                </span>
+              {/if}
+            </button>
+            {#if !branch.isHead}
+              <span class="row-actions">
+                <button class="mini danger" title="Delete branch" onclick={() => deleteBranch(branch)}>
+                  ×
+                </button>
               </span>
             {/if}
           </div>
         {/each}
+        <form
+          class="new-branch"
+          onsubmit={(e) => {
+            e.preventDefault();
+            createBranch();
+          }}
+        >
+          <input placeholder="new branch…" bind:value={newBranchName} />
+          <button type="submit" class="mini" disabled={!newBranchName.trim()}>+</button>
+        </form>
         {#if remoteBranches.length > 0}
           <div class="group-title">Remotes</div>
           {#each remoteBranches as branch (branch.name)}
-            <div class="row static remote">
-              <span class="row-label" title={branch.name}>{branch.name}</span>
+            <div class="row remote">
+              <span class="row-label static-label" title={branch.name}>{branch.name}</span>
             </div>
           {/each}
         {/if}
@@ -211,53 +342,130 @@
                   Conflicts <span class="count">{status.conflicted.length}</span>
                 </div>
                 {#each status.conflicted as path (path)}
-                  <button
-                    class="row"
-                    class:selected={selectedKey === `worktree:${path}`}
-                    onclick={() => selectFile(path, "worktree")}
-                  >
-                    <span class="badge conflictbadge">!</span>
-                    <span class="row-label">{path}</span>
-                  </button>
+                  <div class="row" class:selected={selectedKey === `worktree:${path}`}>
+                    <button class="row-main" onclick={() => selectFile(path, "worktree")}>
+                      <span class="badge conflictbadge">!</span>
+                      <span class="row-label">{path}</span>
+                    </button>
+                  </div>
                 {/each}
               {/if}
-              {@render fileList("Staged", status.staged, "staged")}
-              {@render fileList("Unstaged", status.unstaged, "worktree")}
+
+              {#if status.staged.length > 0}
+                <div class="group-title">
+                  Staged <span class="count">{status.staged.length}</span>
+                  <button class="mini link" onclick={() => act(() => gitUnstageAll(repo!.path)).then(clearDiff)}>
+                    unstage all
+                  </button>
+                </div>
+                {#each status.staged as file ("staged:" + file.path)}
+                  <div class="row" class:selected={selectedKey === `staged:${file.path}`}>
+                    <button class="row-main" onclick={() => selectFile(file.path, "staged")}>
+                      <span class="badge {file.kind}">{kindBadge(file)}</span>
+                      <span class="row-label" title={file.path}>
+                        {#if file.origPath}{file.origPath} → {/if}{file.path}
+                      </span>
+                    </button>
+                    <span class="row-actions">
+                      <button class="mini" title="Unstage" onclick={() => unstageFile(file.path)}>
+                        −
+                      </button>
+                    </span>
+                  </div>
+                {/each}
+              {/if}
+
+              {#if status.unstaged.length > 0}
+                <div class="group-title">
+                  Unstaged <span class="count">{status.unstaged.length}</span>
+                </div>
+                {#each status.unstaged as file ("worktree:" + file.path)}
+                  <div class="row" class:selected={selectedKey === `worktree:${file.path}`}>
+                    <button class="row-main" onclick={() => selectFile(file.path, "worktree")}>
+                      <span class="badge {file.kind}">{kindBadge(file)}</span>
+                      <span class="row-label" title={file.path}>
+                        {#if file.origPath}{file.origPath} → {/if}{file.path}
+                      </span>
+                    </button>
+                    <span class="row-actions">
+                      <button class="mini" title="Stage" onclick={() => stageFile(file.path)}>+</button>
+                      <button
+                        class="mini danger"
+                        title="Discard changes"
+                        onclick={() => discardFile(file.path, false)}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  </div>
+                {/each}
+              {/if}
+
               {#if status.untracked.length > 0}
                 <div class="group-title">
                   Untracked <span class="count">{status.untracked.length}</span>
+                  <button class="mini link" onclick={() => act(() => gitStageAll(repo!.path)).then(clearDiff)}>
+                    stage all
+                  </button>
                 </div>
                 {#each status.untracked as path (path)}
-                  <button
-                    class="row"
-                    class:selected={selectedKey === `untracked:${path}`}
-                    onclick={() => selectFile(path, "untracked")}
-                  >
-                    <span class="badge added">?</span>
-                    <span class="row-label" title={path}>{path}</span>
-                  </button>
+                  <div class="row" class:selected={selectedKey === `untracked:${path}`}>
+                    <button class="row-main" onclick={() => selectFile(path, "untracked")}>
+                      <span class="badge added">?</span>
+                      <span class="row-label" title={path}>{path}</span>
+                    </button>
+                    <span class="row-actions">
+                      <button class="mini" title="Stage" onclick={() => stageFile(path)}>+</button>
+                      <button
+                        class="mini danger"
+                        title="Delete file"
+                        onclick={() => discardFile(path, true)}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  </div>
                 {/each}
               {/if}
+
               {#if changeCount === 0}
                 <div class="empty-note">Working tree clean</div>
               {/if}
             {/if}
           </div>
+
+          <div class="commit-box">
+            <textarea
+              placeholder="Commit message"
+              bind:value={commitMessage}
+              rows="3"
+              onkeydown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") doCommit();
+              }}
+            ></textarea>
+            <div class="commit-actions">
+              <label class="amend">
+                <input type="checkbox" bind:checked={amend} />
+                Amend
+              </label>
+              <button class="primary" disabled={!canCommit} onclick={doCommit}>
+                Commit{status && status.staged.length > 0 ? ` (${status.staged.length})` : ""}
+              </button>
+            </div>
+          </div>
         {:else}
           <div class="scroll">
             {#each commits as commit (commit.hash)}
-              <button
-                class="row commit"
-                class:selected={selectedKey === commit.hash}
-                onclick={() => selectCommit(commit)}
-              >
-                <span class="commit-subject" title={commit.subject}>{commit.subject}</span>
-                <span class="commit-meta">
-                  <code>{commit.shortHash}</code>
-                  {commit.author} · {commitDate(commit.date)}
-                  {#if commit.parents.length > 1}· merge{/if}
-                </span>
-              </button>
+              <div class="row commit" class:selected={selectedKey === commit.hash}>
+                <button class="row-main commit-main" onclick={() => selectCommit(commit)}>
+                  <span class="commit-subject" title={commit.subject}>{commit.subject}</span>
+                  <span class="commit-meta">
+                    <code>{commit.shortHash}</code>
+                    {commit.author} · {commitDate(commit.date)}
+                    {#if commit.parents.length > 1}· merge{/if}
+                  </span>
+                </button>
+              </div>
             {:else}
               <div class="empty-note">No commits yet</div>
             {/each}
@@ -359,7 +567,7 @@
   .columns {
     flex: 1;
     display: grid;
-    grid-template-columns: 200px 320px 1fr;
+    grid-template-columns: 210px 330px 1fr;
     min-height: 0;
   }
   .sidebar {
@@ -404,6 +612,9 @@
     letter-spacing: 0.06em;
     color: var(--fg-muted, #8b949e);
     padding: 0.6rem 0.75rem 0.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
   }
   .group-title.conflict {
     color: #f85149;
@@ -418,25 +629,14 @@
   .row {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
     width: 100%;
-    text-align: left;
-    background: none;
-    border: none;
-    color: var(--fg, #e6edf3);
-    padding: 0.3rem 0.75rem;
-    font-size: 13px;
-    cursor: pointer;
     box-sizing: border-box;
   }
-  .row:hover:not(.static) {
+  .row:hover {
     background: var(--hover, #161b22);
   }
   .row.selected {
     background: var(--selected, #1f2937);
-  }
-  .row.static {
-    cursor: default;
   }
   .row.head {
     font-weight: 600;
@@ -444,15 +644,89 @@
   .row.remote {
     color: var(--fg-muted, #8b949e);
   }
+  .row-main {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    background: none;
+    border: none;
+    color: inherit;
+    padding: 0.3rem 0.75rem;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .row-main:disabled {
+    cursor: default;
+  }
   .row-label {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     flex: 1;
   }
+  .static-label {
+    padding: 0.3rem 0.75rem;
+    font-size: 13px;
+  }
+  .row-actions {
+    display: none;
+    gap: 0.2rem;
+    padding-right: 0.5rem;
+    flex: none;
+  }
+  .row:hover .row-actions {
+    display: flex;
+  }
   .track {
     font-size: 11px;
     color: var(--fg-muted, #8b949e);
+    flex: none;
+  }
+
+  .mini {
+    background: var(--chip, #21262d);
+    color: var(--fg, #e6edf3);
+    border: 1px solid var(--border, #30363d);
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1;
+    padding: 0.15rem 0.45rem;
+    cursor: pointer;
+  }
+  .mini.danger:hover {
+    background: rgba(248, 81, 73, 0.2);
+    border-color: #f85149;
+  }
+  .mini.link {
+    background: none;
+    border: none;
+    color: var(--accent, #58a6ff);
+    text-transform: none;
+    letter-spacing: normal;
+    padding: 0;
+  }
+  .mini:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .new-branch {
+    display: flex;
+    gap: 0.3rem;
+    padding: 0.4rem 0.75rem;
+  }
+  .new-branch input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg, #0d1117);
+    border: 1px solid var(--border, #30363d);
+    border-radius: 4px;
+    color: var(--fg, #e6edf3);
+    padding: 0.2rem 0.4rem;
+    font-size: 12px;
   }
 
   .badge {
@@ -483,6 +757,9 @@
   }
 
   .row.commit {
+    padding: 0;
+  }
+  .commit-main {
     flex-direction: column;
     align-items: flex-start;
     gap: 0.1rem;
@@ -501,6 +778,38 @@
   .commit-meta code {
     color: var(--accent, #58a6ff);
     font-size: 11px;
+  }
+
+  .commit-box {
+    border-top: 1px solid var(--border, #30363d);
+    padding: 0.6rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    flex: none;
+  }
+  .commit-box textarea {
+    resize: vertical;
+    min-height: 3.2em;
+    background: var(--bg, #0d1117);
+    border: 1px solid var(--border, #30363d);
+    border-radius: 6px;
+    color: var(--fg, #e6edf3);
+    padding: 0.4rem 0.6rem;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .commit-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .amend {
+    font-size: 12px;
+    color: var(--fg-muted, #8b949e);
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
   }
 
   .diff-pane {
@@ -544,7 +853,8 @@
   }
 
   button,
-  input {
+  input,
+  textarea {
     font: inherit;
   }
   button.primary,
@@ -558,13 +868,21 @@
     cursor: pointer;
     font-size: 13px;
   }
+  .toolbar button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
   button.primary {
     background: var(--accent-bg, #238636);
     border-color: transparent;
     font-size: 14px;
   }
-  button.primary:hover {
+  button.primary:hover:not(:disabled) {
     background: #2ea043;
+  }
+  button.primary:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .manual input {
     background: var(--bg, #0d1117);

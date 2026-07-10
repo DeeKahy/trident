@@ -51,6 +51,24 @@ impl TestRepo {
         self.git(&["commit", "-m", message]);
     }
 
+    /// Create a bare repository in its own temp dir and register it as
+    /// `origin` of this repo. Returns the bare repo's guard; keep it alive
+    /// for the duration of the test.
+    pub fn add_bare_origin(&self) -> TempDir {
+        let bare = tempfile::tempdir().expect("create temp dir");
+        let output = Command::new("git")
+            .args(["init", "--bare", "--initial-branch=main"])
+            .current_dir(bare.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .expect("spawn git");
+        assert!(output.status.success(), "bare init failed");
+        let url = bare.path().to_str().expect("utf8 path").to_string();
+        self.git(&["remote", "add", "origin", &url]);
+        bare
+    }
+
     /// Like `git`, but for commands expected to exit non-zero as part of the
     /// fixture setup (e.g. a merge that produces conflicts).
     pub fn git_ignore_status(&self, args: &[&str]) {

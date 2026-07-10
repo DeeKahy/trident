@@ -5,9 +5,12 @@
 //! module is unit-testable against throwaway temp repos.
 
 pub mod branch;
+pub mod commit;
 pub mod diff;
 pub mod log;
+pub mod remote;
 pub mod repo;
+pub mod stage;
 pub mod status;
 pub mod types;
 

@@ -52,11 +52,11 @@ Read operations:
 - [x] `git_commit_diff` — full patch for a commit
 
 Write operations (backend only; UI comes in Phase 3):
-- [ ] Stage / unstage a file (and `stage_all` / `unstage_all`)
-- [ ] Discard changes in a file (with the test proving it only touches that file)
-- [ ] Commit (message, amend flag)
-- [ ] Create / switch / delete branch
-- [ ] Fetch, pull, push
+- [x] Stage / unstage a file (and `stage_all` / `unstage_all`)
+- [x] Discard changes in a file (with the test proving it only touches that file)
+- [x] Commit (message, amend flag)
+- [x] Create / switch / delete branch
+- [x] Fetch, pull, push
 - [ ] Structured errors for every failure mode a UI needs to explain
 
 Infrastructure:
@@ -85,11 +85,11 @@ guided commit→sync loop on paper first, then implement. The moment this works,
 **develop Trident using Trident.**
 
 - [ ] Sketch the guided commit→sync flow (defaults, guardrails, what makes it easier than Fork)
-- [ ] Stage / unstage from the UI (per-file; per-hunk can wait)
-- [ ] Discard changes with a real confirmation (destructive — design the guardrail)
+- [x] Stage / unstage from the UI (per-file; per-hunk can wait)
+- [x] Discard changes with a real confirmation (destructive — design the guardrail)
 - [ ] Commit UI: message box, subject/body split, amend
-- [ ] Branch create / switch / delete
-- [ ] Fetch / pull / push buttons with progress and honest error reporting
+- [x] Branch create / switch / delete
+- [x] Fetch / pull / push buttons with progress and honest error reporting
 - [ ] The guided sync loop: one obvious "what do I do next" path
 - [ ] Switch daily driving to Trident (the dogfooding milestone)
 
