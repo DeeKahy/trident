@@ -1,11 +1,13 @@
 mod commands;
 mod git;
+mod watcher;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(watcher::WatcherState::default())
         .invoke_handler(tauri::generate_handler![
             commands::open_repo,
             commands::git_status,
@@ -25,6 +27,8 @@ pub fn run() {
             commands::git_fetch,
             commands::git_pull,
             commands::git_push,
+            commands::git_commit_details,
+            watcher::watch_repo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

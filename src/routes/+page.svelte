@@ -1,7 +1,12 @@
 <script lang="ts">
   import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
+  import { listen } from "@tauri-apps/api/event";
   import DiffView from "$lib/DiffView.svelte";
+  import Avatar from "$lib/Avatar.svelte";
   import {
+    gitCommitDetails,
+    watchRepo,
+    type CommitDetails,
     openRepo,
     gitStatus,
     gitLog,
@@ -41,10 +46,54 @@
   let diffTitle = $state("");
   let selectedKey = $state<string | null>(null);
 
-  let commitMessage = $state("");
+  let commitSubject = $state("");
+  let commitBody = $state("");
   let amend = $state(false);
   let newBranchName = $state("");
   let remoteBusy = $state<"fetch" | "pull" | "push" | null>(null);
+  let details = $state<CommitDetails | null>(null);
+  let logExhausted = $state(false);
+  let loadingMore = $state(false);
+
+  const LOG_PAGE = 200;
+  const RECENT_KEY = "trident.recentRepos";
+
+  interface RecentRepo {
+    path: string;
+    name: string;
+  }
+
+  let recentRepos = $state<RecentRepo[]>(loadRecent());
+
+  function loadRecent(): RecentRepo[] {
+    try {
+      return JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  function rememberRepo(info: RepoInfo) {
+    recentRepos = [
+      { path: info.path, name: info.name },
+      ...recentRepos.filter((r) => r.path !== info.path),
+    ].slice(0, 8);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(recentRepos));
+  }
+
+  // Auto-refresh: the backend watcher emits repo-changed on any relevant
+  // disk change; debounce bursts (checkouts touch hundreds of files).
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    const unlisten = listen("repo-changed", () => {
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(refresh, 400);
+    });
+    return () => {
+      clearTimeout(refreshTimer);
+      unlisten.then((u) => u());
+    };
+  });
 
   let localBranches = $derived(branches.filter((b) => !b.isRemote));
   let remoteBranches = $derived(branches.filter((b) => b.isRemote));
@@ -57,7 +106,7 @@
       : 0
   );
   let canCommit = $derived(
-    commitMessage.trim().length > 0 && status !== null && (status.staged.length > 0 || amend)
+    commitSubject.trim().length > 0 && status !== null && (status.staged.length > 0 || amend)
   );
 
   async function openFromDialog() {
@@ -69,8 +118,12 @@
     error = null;
     try {
       repo = await openRepo(path);
+      rememberRepo(repo);
       clearDiff();
+      logExhausted = false;
+      commits = [];
       await refresh();
+      await watchRepo(repo.path);
     } catch (e) {
       error = errorMessage(e);
     }
@@ -80,20 +133,53 @@
     selectedKey = null;
     diffText = "";
     diffTitle = "";
+    details = null;
   }
 
   async function refresh() {
     if (!repo) return;
     error = null;
     try {
+      // Reload at least as much history as is already on screen so
+      // "load more" progress survives an auto-refresh.
+      const limit = Math.max(commits.length, LOG_PAGE);
       [status, commits, branches] = await Promise.all([
         gitStatus(repo.path),
-        gitLog(repo.path),
+        gitLog(repo.path, limit),
         gitBranches(repo.path),
       ]);
+      await resyncDiff();
     } catch (e) {
       error = errorMessage(e);
     }
+  }
+
+  /** After a refresh, bring the open diff up to date with the new state. */
+  async function resyncDiff() {
+    if (!repo || !selectedKey) return;
+    const colon = selectedKey.indexOf(":");
+    if (colon === -1) return; // a commit diff; commits are immutable
+    const mode = selectedKey.slice(0, colon) as DiffMode;
+    const path = selectedKey.slice(colon + 1);
+    try {
+      diffText = await gitDiffFile(repo.path, path, mode);
+    } catch {
+      // The file left this state (staged, committed, discarded): close it.
+      clearDiff();
+    }
+  }
+
+  async function loadMore() {
+    if (!repo || loadingMore) return;
+    loadingMore = true;
+    try {
+      const older = await gitLog(repo.path, LOG_PAGE, commits.length);
+      commits = [...commits, ...older];
+      if (older.length < LOG_PAGE) logExhausted = true;
+    } catch (e) {
+      error = errorMessage(e);
+    }
+    loadingMore = false;
   }
 
   /** Run a mutating action, surface its error, refresh the panes. */
@@ -124,8 +210,12 @@
     if (!repo) return;
     selectedKey = commit.hash;
     diffTitle = `${commit.shortHash} ${commit.subject}`;
+    details = null;
     try {
-      diffText = await gitCommitDiff(repo.path, commit.hash);
+      [diffText, details] = await Promise.all([
+        gitCommitDiff(repo.path, commit.hash),
+        gitCommitDetails(repo.path, commit.hash),
+      ]);
     } catch (e) {
       diffText = "";
       error = errorMessage(e);
@@ -155,9 +245,12 @@
 
   async function doCommit() {
     if (!canCommit) return;
-    await act(() => gitCommit(repo!.path, commitMessage, amend));
+    const body = commitBody.trim();
+    const message = body ? `${commitSubject.trim()}\n\n${body}` : commitSubject.trim();
+    await act(() => gitCommit(repo!.path, message, amend));
     if (!error) {
-      commitMessage = "";
+      commitSubject = "";
+      commitBody = "";
       amend = false;
       clearDiff();
     }
@@ -223,6 +316,16 @@
       day: "numeric",
     });
   }
+
+  function fullDate(iso: string): string {
+    return new Date(iso).toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
 </script>
 
 {#if repo === null}
@@ -240,6 +343,17 @@
       <input placeholder="…or paste a repo path" bind:value={manualPath} />
       <button type="submit">Open</button>
     </form>
+    {#if recentRepos.length > 0}
+      <div class="recent">
+        <div class="group-title">Recent</div>
+        {#each recentRepos as recent (recent.path)}
+          <button class="recent-row" onclick={() => openPath(recent.path)}>
+            <span class="recent-name">{recent.name}</span>
+            <span class="recent-path" title={recent.path}>{recent.path}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
     {#if error}<div class="error">{error}</div>{/if}
   </main>
 {:else}
@@ -435,9 +549,26 @@
           </div>
 
           <div class="commit-box">
+            <div class="subject-wrap">
+              <input
+                class="subject"
+                placeholder="Commit subject"
+                bind:value={commitSubject}
+                onkeydown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") doCommit();
+                }}
+              />
+              <span
+                class="subject-count"
+                class:over={commitSubject.length > 72}
+                title="Subject length; 50 is conventional, 72 the hard ceiling"
+              >
+                {commitSubject.length || ""}
+              </span>
+            </div>
             <textarea
-              placeholder="Commit message"
-              bind:value={commitMessage}
+              placeholder="Body (optional)"
+              bind:value={commitBody}
               rows="3"
               onkeydown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") doCommit();
@@ -458,17 +589,25 @@
             {#each commits as commit (commit.hash)}
               <div class="row commit" class:selected={selectedKey === commit.hash}>
                 <button class="row-main commit-main" onclick={() => selectCommit(commit)}>
-                  <span class="commit-subject" title={commit.subject}>{commit.subject}</span>
-                  <span class="commit-meta">
-                    <code>{commit.shortHash}</code>
-                    {commit.author} · {commitDate(commit.date)}
-                    {#if commit.parents.length > 1}· merge{/if}
+                  <Avatar email={commit.email} name={commit.author} size={24} />
+                  <span class="commit-text">
+                    <span class="commit-subject" title={commit.subject}>{commit.subject}</span>
+                    <span class="commit-meta">
+                      <code>{commit.shortHash}</code>
+                      {commit.author} · {commitDate(commit.date)}
+                      {#if commit.parents.length > 1}· merge{/if}
+                    </span>
                   </span>
                 </button>
               </div>
             {:else}
               <div class="empty-note">No commits yet</div>
             {/each}
+            {#if commits.length > 0 && !logExhausted}
+              <button class="load-more" disabled={loadingMore} onclick={loadMore}>
+                {loadingMore ? "Loading…" : "Load more"}
+              </button>
+            {/if}
           </div>
         {/if}
       </section>
@@ -476,6 +615,44 @@
       <section class="diff-pane">
         {#if diffTitle}
           <div class="diff-title" title={diffTitle}>{diffTitle}</div>
+        {/if}
+        {#if details}
+          <div class="details">
+            <div class="details-head">
+              <Avatar email={details.author.email} name={details.author.name} size={40} />
+              <div class="details-who">
+                <span class="details-name">{details.author.name}</span>
+                <a class="details-email" href="mailto:{details.author.email}">
+                  {details.author.email}
+                </a>
+                <span class="details-date">{fullDate(details.author.date)}</span>
+              </div>
+              <div class="details-ids">
+                <code title={details.hash}>{details.shortHash}</code>
+                {#if details.parents.length > 1}<span class="merge-tag">merge</span>{/if}
+              </div>
+            </div>
+            {#if details.committer.email !== details.author.email || details.committer.name !== details.author.name}
+              <div class="details-committer">
+                <Avatar email={details.committer.email} name={details.committer.name} size={16} />
+                committed by {details.committer.name}
+                &lt;{details.committer.email}&gt; · {fullDate(details.committer.date)}
+              </div>
+            {/if}
+            {#if details.message.includes("\n")}
+              <pre class="details-message">{details.message}</pre>
+            {/if}
+            {#if details.files.length > 0}
+              <div class="details-files">
+                {#each details.files as file (file.path)}
+                  <span class="file-chip">
+                    <span class="badge {file.kind}">{kindBadge(file)}</span>
+                    {#if file.origPath}{file.origPath} → {/if}{file.path}
+                  </span>
+                {/each}
+              </div>
+            {/if}
+          </div>
         {/if}
         <div class="diff-body">
           <DiffView
@@ -756,14 +933,70 @@
     color: #f85149;
   }
 
+  .recent {
+    margin-top: 1.5rem;
+    width: 420px;
+    max-width: 90vw;
+    display: flex;
+    flex-direction: column;
+  }
+  .recent-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    color: var(--fg, #e6edf3);
+    padding: 0.4rem 0.75rem;
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .recent-row:hover {
+    background: var(--hover, #161b22);
+  }
+  .recent-name {
+    font-weight: 600;
+    flex: none;
+  }
+  .recent-path {
+    color: var(--fg-muted, #8b949e);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .row.commit {
     padding: 0;
   }
   .commit-main {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.1rem;
+    align-items: center;
+    gap: 0.6rem;
     padding: 0.4rem 0.75rem;
+  }
+  .commit-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+    flex: 1;
+  }
+  .load-more {
+    display: block;
+    margin: 0.5rem auto 0.75rem;
+    background: var(--chip, #21262d);
+    color: var(--fg, #e6edf3);
+    border: 1px solid var(--border, #30363d);
+    border-radius: 6px;
+    padding: 0.3rem 1rem;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .load-more:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .commit-subject {
     overflow: hidden;
@@ -799,6 +1032,30 @@
     font-size: 13px;
     font-family: inherit;
   }
+  .subject-wrap {
+    position: relative;
+    display: flex;
+  }
+  .subject {
+    flex: 1;
+    background: var(--bg, #0d1117);
+    border: 1px solid var(--border, #30363d);
+    border-radius: 6px;
+    color: var(--fg, #e6edf3);
+    padding: 0.4rem 2.6rem 0.4rem 0.6rem;
+    font-size: 13px;
+  }
+  .subject-count {
+    position: absolute;
+    right: 0.6rem;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 11px;
+    color: var(--fg-muted, #8b949e);
+  }
+  .subject-count.over {
+    color: #f85149;
+  }
   .commit-actions {
     display: flex;
     align-items: center;
@@ -832,6 +1089,105 @@
   .diff-body {
     flex: 1;
     min-height: 0;
+  }
+
+  .details {
+    border-bottom: 1px solid var(--border, #30363d);
+    padding: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    flex: none;
+    max-height: 40%;
+    overflow-y: auto;
+  }
+  .details-head {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .details-who {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+    flex: 1;
+  }
+  .details-name {
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .details-email {
+    color: var(--accent, #58a6ff);
+    font-size: 12px;
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .details-email:hover {
+    text-decoration: underline;
+  }
+  .details-date {
+    color: var(--fg-muted, #8b949e);
+    font-size: 12px;
+  }
+  .details-ids {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex: none;
+  }
+  .details-ids code {
+    color: var(--accent, #58a6ff);
+    font-size: 12px;
+    background: var(--chip, #21262d);
+    border-radius: 4px;
+    padding: 0.15rem 0.4rem;
+  }
+  .merge-tag {
+    font-size: 11px;
+    color: var(--fg-muted, #8b949e);
+    border: 1px solid var(--border, #30363d);
+    border-radius: 999px;
+    padding: 0.05rem 0.5rem;
+  }
+  .details-committer {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--fg-muted, #8b949e);
+    font-size: 12px;
+  }
+  .details-message {
+    margin: 0;
+    font-family: inherit;
+    font-size: 13px;
+    white-space: pre-wrap;
+    color: var(--fg, #e6edf3);
+    background: var(--chip, #21262d);
+    border-radius: 6px;
+    padding: 0.5rem 0.6rem;
+  }
+  .details-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+  .file-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 11px;
+    font-family: ui-monospace, monospace;
+    background: var(--chip, #21262d);
+    border: 1px solid var(--border, #30363d);
+    border-radius: 999px;
+    padding: 0.1rem 0.5rem;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .empty-note {

@@ -50,6 +50,22 @@ export interface CommitInfo {
   subject: string;
 }
 
+export interface Signature {
+  name: string;
+  email: string;
+  date: string;
+}
+
+export interface CommitDetails {
+  hash: string;
+  shortHash: string;
+  author: Signature;
+  committer: Signature;
+  message: string;
+  parents: string[];
+  files: FileChange[];
+}
+
 export interface BranchInfo {
   name: string;
   shortHash: string;
@@ -146,6 +162,15 @@ export function gitPull(repoPath: string): Promise<void> {
 
 export function gitPush(repoPath: string): Promise<void> {
   return invoke("git_push", { repoPath });
+}
+
+export function gitCommitDetails(repoPath: string, hash: string): Promise<CommitDetails> {
+  return invoke("git_commit_details", { repoPath, hash });
+}
+
+/** Start (or move) the backend filesystem watcher to this repo. */
+export function watchRepo(repoPath: string): Promise<void> {
+  return invoke("watch_repo", { repoPath });
 }
 
 /** Render an unknown thrown value (usually a GitError) as a message. */

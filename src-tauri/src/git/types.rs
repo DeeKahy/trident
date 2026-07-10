@@ -92,6 +92,30 @@ pub struct CommitInfo {
     pub subject: String,
 }
 
+/// Author or committer identity on a commit.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Signature {
+    pub name: String,
+    pub email: String,
+    /// Strict ISO-8601.
+    pub date: String,
+}
+
+/// Everything the commit-details panel shows for one commit.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDetails {
+    pub hash: String,
+    pub short_hash: String,
+    pub author: Signature,
+    pub committer: Signature,
+    /// Full message: subject plus body.
+    pub message: String,
+    pub parents: Vec<String>,
+    pub files: Vec<FileChange>,
+}
+
 /// One local or remote branch.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -73,10 +73,10 @@ that literally cannot damage a repository — dogfood it on real projects immedi
 - [x] Staged / unstaged / untracked / conflicted file lists
 - [x] Commit history as a plain vertical list (fancy lanes come in Phase 4)
 - [x] Diff view for the selected file or commit
-- [ ] Remember recently opened repositories across launches
-- [ ] Auto-refresh when the repo changes on disk (filesystem watcher)
-- [ ] Commit details panel (full message, author/committer, changed-file list)
-- [ ] Load more history on scroll (the backend already supports limit/skip)
+- [x] Remember recently opened repositories across launches
+- [x] Auto-refresh when the repo changes on disk (filesystem watcher)
+- [x] Commit details panel (full message, author/committer, changed-file list)
+- [x] Load more history on scroll (the backend already supports limit/skip)
 
 ## Phase 3 — Write operations and the "set flow"
 
@@ -87,7 +87,7 @@ guided commit→sync loop on paper first, then implement. The moment this works,
 - [ ] Sketch the guided commit→sync flow (defaults, guardrails, what makes it easier than Fork)
 - [x] Stage / unstage from the UI (per-file; per-hunk can wait)
 - [x] Discard changes with a real confirmation (destructive — design the guardrail)
-- [ ] Commit UI: message box, subject/body split, amend
+- [x] Commit UI: message box, subject/body split, amend
 - [x] Branch create / switch / delete
 - [x] Fetch / pull / push buttons with progress and honest error reporting
 - [ ] The guided sync loop: one obvious "what do I do next" path

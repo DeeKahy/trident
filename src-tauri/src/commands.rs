@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use crate::git::diff::DiffMode;
-use crate::git::types::{BranchInfo, CommitInfo, RepoInfo, Status};
+use crate::git::types::{BranchInfo, CommitDetails, CommitInfo, RepoInfo, Status};
 use crate::git::{branch, commit, diff, log, remote, repo, stage, status, GitError};
 
 type CmdResult<T> = Result<T, GitError>;
@@ -38,6 +38,11 @@ pub async fn git_diff_file(repo_path: String, path: String, mode: DiffMode) -> C
 #[tauri::command]
 pub async fn git_commit_diff(repo_path: String, hash: String) -> CmdResult<String> {
     diff::commit_diff(&PathBuf::from(repo_path), &hash)
+}
+
+#[tauri::command]
+pub async fn git_commit_details(repo_path: String, hash: String) -> CmdResult<CommitDetails> {
+    log::commit_details(&PathBuf::from(repo_path), &hash)
 }
 
 #[tauri::command]

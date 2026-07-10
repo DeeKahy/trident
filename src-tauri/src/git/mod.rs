@@ -65,6 +65,10 @@ pub fn run_git_with_ok_codes(repo: &Path, args: &[&str], ok_codes: &[i32]) -> Re
     let output = Command::new("git")
         .args(args)
         .current_dir(repo)
+        // Read-only commands must not take optional locks (e.g. `git status`
+        // refreshing the index), or the filesystem watcher would see our own
+        // polls as repository changes and refresh forever.
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
         .map_err(|e| GitError::new(format!("failed to spawn git: {e}"), display.clone(), None))?;
 
