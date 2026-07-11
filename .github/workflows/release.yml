@@ -68,3 +68,25 @@ jobs:
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm
             src-tauri/target/release/bundle/appimage/*.AppImage
+
+  # Point the Homebrew tap at the new version so `brew upgrade` sees it.
+  homebrew:
+    needs: bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update the cask in DeeKahy/homebrew-tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern "*aarch64.dmg"
+          sha=$(shasum -a 256 trident_${version}_aarch64.dmg | cut -d" " -f1)
+
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/DeeKahy/homebrew-tap.git" tap
+          cd tap
+          sed -i -E "s/version \"[^\"]+\"/version \"${version}\"/" Casks/trident.rb
+          sed -i -E "s/sha256 \"[^\"]+\"/sha256 \"${sha}\"/" Casks/trident.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "trident ${version}"
+          git push
