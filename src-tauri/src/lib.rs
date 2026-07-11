@@ -1,5 +1,6 @@
 mod commands;
 mod git;
+mod github;
 mod shell;
 mod watcher;
 
@@ -46,6 +47,11 @@ pub fn run() {
             commands::repo_summary,
             commands::clone_repo,
             commands::init_repo,
+            commands::scan_repos,
+            github::github_account,
+            github::github_repos,
+            github::github_connect,
+            github::github_disconnect,
             shell::open_in_editor,
             shell::open_in_terminal,
             watcher::watch_repo,

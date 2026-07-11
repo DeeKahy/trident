@@ -82,6 +82,9 @@ pub fn repo_summary(path: &Path) -> Result<RepoSummary> {
     let changes =
         (s.staged.len() + s.unstaged.len() + s.untracked.len() + s.conflicted.len()) as u32;
     let last_commit_date = log::log(root, 1, 0, false)?.first().map(|c| c.date.clone());
+    let origin_url = run_git(root, &["remote", "get-url", "origin"])
+        .ok()
+        .map(|u| u.trim().to_string());
 
     Ok(RepoSummary {
         name: info.name,
@@ -91,6 +94,7 @@ pub fn repo_summary(path: &Path) -> Result<RepoSummary> {
         ahead: s.branch.ahead,
         behind: s.branch.behind,
         last_commit_date,
+        origin_url,
         langs: languages(root)?,
     })
 }

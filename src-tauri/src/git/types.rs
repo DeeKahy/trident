@@ -155,7 +155,18 @@ pub struct RepoSummary {
     pub ahead: u32,
     pub behind: u32,
     pub last_commit_date: Option<String>,
+    /// URL of the origin remote, used to match local clones to their
+    /// GitHub/GitLab counterparts.
+    pub origin_url: Option<String>,
     pub langs: Vec<LangStat>,
+}
+
+/// A repository discovered by the folder scanner.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundRepo {
+    pub path: String,
+    pub name: String,
 }
 
 /// One local or remote branch.

@@ -11,6 +11,7 @@ pub mod ignore;
 pub mod log;
 pub mod remote;
 pub mod repo;
+pub mod scan;
 pub mod stage;
 pub mod stash;
 pub mod status;

@@ -6,8 +6,16 @@
     initRepo,
     openInEditor,
     openInTerminal,
+    scanRepos,
+    githubAccount,
+    githubRepos,
+    githubConnect,
+    githubDisconnect,
     errorMessage,
     type RepoSummary,
+    type FoundRepo,
+    type GithubUser,
+    type GithubRepo,
   } from "$lib/git";
 
   let { onopen }: { onopen: (path: string) => void } = $props();
@@ -34,6 +42,59 @@
   let newName = $state("");
   let projectsDir = $state<string>(localStorage.getItem(DIR_KEY) ?? "");
   let working = $state(false);
+
+  // GitHub
+  let ghUser = $state<GithubUser | null>(null);
+  let ghChecked = $state(false);
+  let ghRepos = $state<GithubRepo[]>([]);
+  let ghError = $state<string | null>(null);
+  let accountModal = $state(false);
+  let tokenInput = $state("");
+
+  // repo scanner
+  let scanModal = $state(false);
+  let scanning = $state(false);
+  let scanResults = $state<FoundRepo[]>([]);
+  let scanSelected = $state<Record<string, boolean>>({});
+
+  $effect(() => {
+    githubAccount()
+      .then(async (u) => {
+        ghUser = u;
+        ghChecked = true;
+        if (u) ghRepos = await githubRepos();
+      })
+      .catch((e) => {
+        ghChecked = true;
+        ghError = errorMessage(e);
+      });
+  });
+
+  /// "github.com/user/repo" from any https/ssh remote URL variant.
+  function normalizeGitUrl(url: string): string {
+    return url
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, "")
+      .replace(/^ssh:\/\//, "")
+      .replace(/^git@/, "")
+      .replace(":", "/")
+      .replace(/\.git$/, "")
+      .replace(/\/+$/, "");
+  }
+
+  /// Local project path for a GitHub repo, when a clone already exists.
+  let localPathByUrl = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const p of projects) {
+      const s = summaries[p.path];
+      if (s && s !== "missing" && s.originUrl) {
+        map.set(normalizeGitUrl(s.originUrl), p.path);
+      }
+    }
+    return map;
+  });
+  const clonePathOf = (r: GithubRepo) => localPathByUrl.get(normalizeGitUrl(r.cloneUrl)) ?? null;
 
   const LANG_COLORS: Record<string, string> = {
     Rust: "#b7410e",
@@ -87,7 +148,6 @@
   });
 
   let visible = $derived.by(() => {
-    // GitHub/GitLab filters have nothing to show until account sign-in exists.
     if (filter === "GitHub" || filter === "GitLab") return [];
     const q = query.trim().toLowerCase();
     return projects.filter((p) => {
@@ -97,6 +157,77 @@
       return p.name.toLowerCase().includes(q) || langs.some((l) => l.includes(q));
     });
   });
+
+  /// GitHub cards: everything on the GitHub tab; only not-yet-cloned repos
+  /// on All (their clones are already there as local cards).
+  let ghVisible = $derived.by(() => {
+    if (filter === "Local" || filter === "GitLab" || !ghUser) return [];
+    const q = query.trim().toLowerCase();
+    return ghRepos.filter((r) => {
+      if (filter === "All" && clonePathOf(r)) return false;
+      if (!q) return true;
+      return (
+        r.name.toLowerCase().includes(q) || (r.language ?? "").toLowerCase().includes(q)
+      );
+    });
+  });
+
+  async function connectGithub() {
+    if (!tokenInput.trim()) return;
+    working = true;
+    ghError = null;
+    try {
+      ghUser = await githubConnect(tokenInput);
+      tokenInput = "";
+      accountModal = false;
+      ghRepos = await githubRepos();
+    } catch (e) {
+      ghError = errorMessage(e);
+    }
+    working = false;
+  }
+
+  async function disconnectGithub() {
+    await githubDisconnect();
+    // env/gh tokens are outside the keychain; re-resolve to see what's left.
+    ghUser = await githubAccount().catch(() => null);
+    if (!ghUser) ghRepos = [];
+    accountModal = false;
+  }
+
+  function cloneFromGithub(r: GithubRepo) {
+    cloneUrl = r.cloneUrl;
+    error = null;
+    cloneModal = true;
+  }
+
+  async function openScan() {
+    addOpen = false;
+    scanModal = true;
+    scanning = true;
+    scanResults = [];
+    try {
+      const found = await scanRepos();
+      const known = new Set(projects.map((p) => p.path));
+      scanResults = found;
+      const sel: Record<string, boolean> = {};
+      for (const f of found) sel[f.path] = !known.has(f.path);
+      scanSelected = sel;
+    } catch (e) {
+      error = errorMessage(e);
+    }
+    scanning = false;
+  }
+
+  let scanNew = $derived(scanResults.filter((f) => !projects.some((p) => p.path === f.path)));
+  let scanPickedCount = $derived(scanNew.filter((f) => scanSelected[f.path]).length);
+
+  function addScanned() {
+    const picked = scanNew.filter((f) => scanSelected[f.path]);
+    projects = [...picked.map((f) => ({ path: f.path, name: f.name })), ...projects];
+    saveRecent();
+    scanModal = false;
+  }
 
   function relTime(iso: string): string {
     const s = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -237,6 +368,13 @@
               <span class="mono add-hint">a repo already on disk</span>
             </span>
           </button>
+          <button class="add-item" onclick={openScan}>
+            <span class="add-icon">🔍</span>
+            <span class="add-body">
+              <span class="add-label">Scan for existing repos…</span>
+              <span class="mono add-hint">searches your usual project folders</span>
+            </span>
+          </button>
           <button class="add-item last" onclick={() => { addOpen = false; newModal = true; error = null; }}>
             <span class="add-icon">＋</span>
             <span class="add-body">
@@ -253,14 +391,28 @@
   <div class="accounts">
     <span class="acct github">
       <svg width="13" height="13" viewBox="0 0 16 16" fill="var(--github)"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z" /></svg>
-      GitHub · not connected
+      {#if ghUser}
+        <img class="acct-avatar" src={ghUser.avatarUrl} alt={ghUser.login} />
+        github.com/{ghUser.login}
+      {:else if !ghChecked}
+        GitHub · checking…
+      {:else}
+        GitHub · not connected
+      {/if}
     </span>
     <span class="acct gitlab">
       <svg width="13" height="13" viewBox="0 0 16 16" fill="var(--gitlab)"><path d="M8 15.5l2.94-9.05H5.06L8 15.5z" opacity=".9" /><path d="M8 15.5L5.06 6.45H1.34L8 15.5zM8 15.5l2.94-9.05h3.72L8 15.5z" /><path d="M1.34 6.45L.45 9.2c-.08.25 0 .52.22.67L8 15.5 1.34 6.45zM14.66 6.45l.89 2.75c.08.25 0 .52-.22.67L8 15.5l6.66-9.05z" /></svg>
       GitLab · not connected
     </span>
-    <span class="mono acct-note">account sign-in is coming to Trident soon · your repos will show up here</span>
+    <span class="mono acct-note">
+      {#if ghUser}
+        {ghRepos.length} GitHub repos found · {ghRepos.filter((r) => clonePathOf(r)).length} cloned locally
+      {:else}
+        connect GitHub to see your repos here · GitLab support is coming
+      {/if}
+    </span>
     <span class="spacer"></span>
+    <button class="manage-btn" onclick={() => { accountModal = true; ghError = null; }}>Manage accounts</button>
   </div>
 
   {#if error && !cloneModal && !newModal}
@@ -269,16 +421,22 @@
 
   <!-- grid -->
   <div class="grid-wrap">
-    {#if filter === "GitHub" || filter === "GitLab"}
+    {#if filter === "GitLab"}
       <div class="no-results">
-        <div class="nr-title">No {filter} account connected</div>
-        <div class="mono nr-sub">account sign-in is coming to Trident soon</div>
+        <div class="nr-title">No GitLab account connected</div>
+        <div class="mono nr-sub">GitLab support is coming</div>
       </div>
-    {:else if visible.length === 0}
+    {:else if filter === "GitHub" && !ghUser}
+      <div class="no-results">
+        <div class="nr-title">No GitHub account connected</div>
+        <div class="mono nr-sub">connect via Manage accounts to see your repos</div>
+        <button class="add-btn nr-connect" onclick={() => { accountModal = true; ghError = null; }}>Connect GitHub</button>
+      </div>
+    {:else if visible.length === 0 && ghVisible.length === 0}
       <div class="no-results">
         <div class="nr-title">{projects.length === 0 ? "No projects yet" : "No projects match"}</div>
         <div class="mono nr-sub">
-          {projects.length === 0 ? "Use Add to clone, create, or pick a folder" : "Try a different filter or search term"}
+          {projects.length === 0 ? "Use Add to clone, create, scan, or pick a folder" : "Try a different filter or search term"}
         </div>
       </div>
     {:else}
@@ -345,10 +503,129 @@
             </div>
           </div>
         {/each}
+        {#each ghVisible as r (r.fullName)}
+          {@const localPath = clonePathOf(r)}
+          <div class="card">
+            <div class="card-top">
+              <span class="pill-badge gh mono">☁ GitHub{r.private ? " · private" : ""}{r.fork ? " · fork" : ""}</span>
+              {#if localPath}
+                <span class="pill-status mono clean">✓ cloned</span>
+              {:else}
+                <span class="pill-status mono missing">not cloned</span>
+              {/if}
+            </div>
+            <div class="card-name">{r.name}</div>
+            <div class="mono card-meta">
+              ★ {r.stars}{#if r.pushedAt}&nbsp;· updated {relTime(r.pushedAt)}{/if}
+            </div>
+            <div class="lang-bar">
+              {#if r.language}<span style="flex:1;background:{langColor(r.language)}"></span>{/if}
+            </div>
+            <div class="mono lang-legend">{r.language ?? ""}&nbsp;</div>
+            <div class="tags">
+              {#if r.language}
+                <span class="tag"><i style="background:{langColor(r.language)}"></i>{r.language}</span>
+              {/if}
+              {#if r.description}
+                <span class="tag desc" title={r.description}>{r.description}</span>
+              {/if}
+            </div>
+            <div class="actions">
+              {#if localPath}
+                <button class="act primary" onclick={() => onopen(localPath)}>Open ▸</button>
+              {:else}
+                <button class="act clone" onclick={() => cloneFromGithub(r)}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l4-4m-4 4l-4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" /></svg>
+                  Clone locally
+                </button>
+              {/if}
+            </div>
+          </div>
+        {/each}
       </div>
     {/if}
   </div>
 </main>
+
+<!-- manage accounts modal -->
+{#if accountModal}
+  <button class="overlay" onclick={() => (accountModal = false)} aria-label="close"></button>
+  <div class="modal">
+    <div class="modal-top">
+      <div class="modal-title">Accounts</div>
+      <div class="mono modal-sub">connect GitHub to browse and clone your repos</div>
+    </div>
+    <div class="modal-body">
+      {#if ghUser}
+        <div class="connected-row">
+          <img class="acct-avatar big" src={ghUser.avatarUrl} alt={ghUser.login} />
+          <div class="connected-col">
+            <span class="connected-name">{ghUser.name ?? ghUser.login}</span>
+            <span class="mono connected-sub">github.com/{ghUser.login} · via {ghUser.tokenSource === "gh" ? "gh CLI" : ghUser.tokenSource === "env" ? "GITHUB_TOKEN" : "saved token"}</span>
+          </div>
+        </div>
+        {#if ghUser.tokenSource === "keychain"}
+          <button class="cancel full" onclick={disconnectGithub}>Disconnect</button>
+        {:else}
+          <div class="mono field-hint">this sign-in comes from outside Trident ({ghUser.tokenSource === "gh" ? "the gh CLI" : "the GITHUB_TOKEN variable"}), manage it there</div>
+        {/if}
+      {:else}
+        <div class="field-label">Personal access token</div>
+        <input class="mono field" type="password" placeholder="ghp_… or github_pat_…" bind:value={tokenInput} />
+        <div class="mono field-hint">
+          create one at github.com/settings/tokens with repo scope · stored in your OS keychain ·
+          already using the gh CLI? then you're connected automatically
+        </div>
+        {#if ghError}<div class="hub-error inline">{ghError}</div>{/if}
+        <div class="modal-actions">
+          <button class="cancel" onclick={() => (accountModal = false)}>Cancel</button>
+          <button class="cta" disabled={!tokenInput.trim() || working} onclick={connectGithub}>
+            {working ? "Checking…" : "Connect GitHub"}
+          </button>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
+<!-- scan modal -->
+{#if scanModal}
+  <button class="overlay" onclick={() => (scanModal = false)} aria-label="close"></button>
+  <div class="modal">
+    <div class="modal-top">
+      <div class="modal-title">Scan for repositories</div>
+      <div class="mono modal-sub">looks a few levels deep in your usual project folders</div>
+    </div>
+    <div class="modal-body">
+      {#if scanning}
+        <div class="mono scan-note">Scanning…</div>
+      {:else if scanResults.length === 0}
+        <div class="mono scan-note">No repositories found in the common folders.</div>
+      {:else}
+        <div class="scan-list">
+          {#each scanResults as f (f.path)}
+            {@const known = projects.some((p) => p.path === f.path)}
+            <label class="scan-row" class:known>
+              <input type="checkbox" disabled={known} bind:checked={scanSelected[f.path]} />
+              <span class="scan-name">{f.name}</span>
+              <span class="mono scan-path" title={f.path}>{f.path}</span>
+              {#if known}<span class="mono scan-known">already added</span>{/if}
+            </label>
+          {/each}
+        </div>
+        <div class="mono field-hint">
+          {scanResults.length} found · {scanResults.length - scanNew.length} already on the hub
+        </div>
+      {/if}
+      <div class="modal-actions">
+        <button class="cancel" onclick={() => (scanModal = false)}>Cancel</button>
+        <button class="cta" disabled={scanning || scanPickedCount === 0} onclick={addScanned}>
+          Add {scanPickedCount} repo{scanPickedCount === 1 ? "" : "s"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- clone modal -->
 {#if cloneModal}
@@ -619,6 +896,121 @@
     font-size: 11px;
     color: var(--muted);
     margin-left: 2px;
+  }
+  .acct-avatar {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+  }
+  .acct-avatar.big {
+    width: 38px;
+    height: 38px;
+  }
+  .manage-btn {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+  .manage-btn:hover {
+    color: var(--ink);
+  }
+  .pill-badge.gh {
+    background: var(--github-soft, #f2edfb);
+    border-color: #e3d8f5;
+    color: var(--github);
+  }
+  .tag.desc {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+  }
+  .act.clone {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    box-shadow: 0 4px 12px -6px var(--accent);
+  }
+  .act.clone:hover:not(:disabled) {
+    filter: brightness(1.07);
+    background: var(--accent);
+  }
+  .nr-connect {
+    margin: 18px auto 0;
+  }
+  .connected-row {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    margin-bottom: 16px;
+  }
+  .connected-col {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .connected-name {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .connected-sub {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .cancel.full {
+    width: 100%;
+  }
+  .scan-note {
+    font-size: 12px;
+    color: var(--muted);
+    padding: 8px 0 16px;
+  }
+  .scan-list {
+    max-height: 300px;
+    overflow: auto;
+    margin-bottom: 8px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 4px;
+  }
+  .scan-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 9px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .scan-row:hover {
+    background: var(--surface2);
+  }
+  .scan-row.known {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .scan-name {
+    font-size: 12.5px;
+    font-weight: 600;
+    flex: none;
+  }
+  .scan-path {
+    font-size: 10px;
+    color: var(--muted);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .scan-known {
+    font-size: 9.5px;
+    color: var(--clean);
+    flex: none;
   }
 
   .hub-error {

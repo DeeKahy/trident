@@ -112,11 +112,13 @@ Each of these is a mini-project. They most define whether it "feels like Fork."
 The reason Trident exists: first-class GitHub and GitLab support, not just plain git remotes.
 
 - [ ] OAuth device-flow sign-in for GitHub and GitLab (tokens in OS keychain)
+      *(interim GitHub sign-in ships already: gh CLI, GITHUB_TOKEN, or a pasted
+      token stored in the keychain)*
 - [ ] Detect the hosting service from the remote URL (github.com, gitlab.com, self-hosted GitLab)
 - [ ] Pull requests / merge requests: list, view, check out a PR/MR branch locally
 - [ ] Create a PR/MR from the current branch (the natural end of the guided sync loop)
 - [ ] CI status checks shown on branches and commits
-- [ ] Clone from a list of your repositories
+- [x] Clone from a list of your repositories (GitHub; GitLab pending)
 
 ## Phase 6 — Polish
 

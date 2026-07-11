@@ -39,7 +39,33 @@ export interface RepoSummary {
   ahead: number;
   behind: number;
   lastCommitDate: string | null;
+  originUrl: string | null;
   langs: LangStat[];
+}
+
+export interface FoundRepo {
+  path: string;
+  name: string;
+}
+
+export interface GithubUser {
+  login: string;
+  name: string | null;
+  avatarUrl: string;
+  tokenSource: "env" | "keychain" | "gh";
+}
+
+export interface GithubRepo {
+  name: string;
+  fullName: string;
+  private: boolean;
+  fork: boolean;
+  htmlUrl: string;
+  cloneUrl: string;
+  pushedAt: string | null;
+  stars: number;
+  language: string | null;
+  description: string | null;
 }
 
 export interface TagInfo {
@@ -278,6 +304,26 @@ export function openInEditor(path: string): Promise<void> {
 
 export function openInTerminal(path: string): Promise<void> {
   return invoke("open_in_terminal", { path });
+}
+
+export function scanRepos(): Promise<FoundRepo[]> {
+  return invoke("scan_repos");
+}
+
+export function githubAccount(): Promise<GithubUser | null> {
+  return invoke("github_account");
+}
+
+export function githubRepos(): Promise<GithubRepo[]> {
+  return invoke("github_repos");
+}
+
+export function githubConnect(token: string): Promise<GithubUser> {
+  return invoke("github_connect", { token });
+}
+
+export function githubDisconnect(): Promise<void> {
+  return invoke("github_disconnect");
 }
 
 /** Render an unknown thrown value (usually a GitError) as a message. */

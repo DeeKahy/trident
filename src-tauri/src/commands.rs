@@ -6,10 +6,11 @@ use std::path::PathBuf;
 
 use crate::git::diff::DiffMode;
 use crate::git::types::{
-    BranchInfo, CommitDetails, CommitInfo, RepoInfo, RepoSummary, Status, TagInfo,
+    BranchInfo, CommitDetails, CommitInfo, FoundRepo, RepoInfo, RepoSummary, Status, TagInfo,
 };
 use crate::git::{
-    branch, commit, diff, ignore, log, remote, repo, stage, stash, status, summary, tag, GitError,
+    branch, commit, diff, ignore, log, remote, repo, scan, stage, stash, status, summary, tag,
+    GitError,
 };
 
 type CmdResult<T> = Result<T, GitError>;
@@ -37,6 +38,11 @@ pub async fn clone_repo(url: String, dest: String) -> CmdResult<RepoInfo> {
 #[tauri::command]
 pub async fn init_repo(path: String) -> CmdResult<RepoInfo> {
     repo::init_repo(&PathBuf::from(path))
+}
+
+#[tauri::command]
+pub async fn scan_repos() -> CmdResult<Vec<FoundRepo>> {
+    Ok(scan::scan_for_repos(&scan::default_roots()))
 }
 
 #[tauri::command]

@@ -41,6 +41,8 @@ one place.
     config (HOME + GIT_CONFIG_GLOBAL/SYSTEM overridden, pinned commit dates, signing off).
 - `src-tauri/src/commands.rs`: thin async Tauri command wrappers only; deserialize,
   call the pure function, return. No logic here.
+- `src-tauri/src/github.rs`: GitHub API access (ureq). Token from GITHUB_TOKEN,
+  the OS keychain (keyring crate), or the gh CLI; never stored anywhere else.
 - `src/lib/git.ts`: TypeScript mirrors of the Rust types + `invoke` wrappers.
   **When a struct in `types.rs` changes, update this file in the same change.**
 - `src/lib/DiffView.svelte`: renders raw unified-diff text with line coloring.
