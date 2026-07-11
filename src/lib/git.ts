@@ -306,8 +306,17 @@ export function openInTerminal(path: string): Promise<void> {
   return invoke("open_in_terminal", { path });
 }
 
-export function scanRepos(): Promise<FoundRepo[]> {
+export interface ScanReport {
+  repos: FoundRepo[];
+  unreadableRoots: string[];
+}
+
+export function scanRepos(): Promise<ScanReport> {
   return invoke("scan_repos");
+}
+
+export function scanFolder(path: string): Promise<FoundRepo[]> {
+  return invoke("scan_folder", { path });
 }
 
 export function githubAccount(): Promise<GithubUser | null> {

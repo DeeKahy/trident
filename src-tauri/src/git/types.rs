@@ -169,6 +169,15 @@ pub struct FoundRepo {
     pub name: String,
 }
 
+/// Scanner results plus any roots the app was not allowed to read
+/// (macOS folder privacy), so the UI can explain empty results.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanReport {
+    pub repos: Vec<FoundRepo>,
+    pub unreadable_roots: Vec<String>,
+}
+
 /// One local or remote branch.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

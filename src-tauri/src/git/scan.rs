@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::types::FoundRepo;
+use super::types::{FoundRepo, ScanReport};
 
 const MAX_DEPTH: usize = 4;
 
@@ -49,6 +49,22 @@ pub fn scan_for_repos(roots: &[PathBuf]) -> Vec<FoundRepo> {
         walk(root, 0, &mut found);
     }
     found.into_values().collect()
+}
+
+/// Like `scan_for_repos`, but also reports roots that exist and could not
+/// be read at all. On macOS that usually means the system's folder privacy
+/// protection denied the app, and the UI should say so instead of quietly
+/// showing an empty list.
+pub fn scan_with_report(roots: &[PathBuf]) -> ScanReport {
+    let unreadable: Vec<String> = roots
+        .iter()
+        .filter(|r| r.is_dir() && std::fs::read_dir(r).is_err())
+        .map(|r| r.to_string_lossy().into_owned())
+        .collect();
+    ScanReport {
+        repos: scan_for_repos(roots),
+        unreadable_roots: unreadable,
+    }
 }
 
 fn walk(dir: &Path, depth: usize, found: &mut BTreeMap<PathBuf, FoundRepo>) {

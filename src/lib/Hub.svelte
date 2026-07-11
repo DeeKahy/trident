@@ -7,6 +7,7 @@
     openInEditor,
     openInTerminal,
     scanRepos,
+    scanFolder,
     githubAccount,
     githubRepos,
     githubConnect,
@@ -56,6 +57,7 @@
   let scanning = $state(false);
   let scanResults = $state<FoundRepo[]>([]);
   let scanSelected = $state<Record<string, boolean>>({});
+  let scanBlocked = $state<string[]>([]);
 
   $effect(() => {
     githubAccount()
@@ -201,18 +203,40 @@
     cloneModal = true;
   }
 
+  function mergeScanResults(found: FoundRepo[]) {
+    const known = new Set(projects.map((p) => p.path));
+    const have = new Set(scanResults.map((f) => f.path));
+    scanResults = [...scanResults, ...found.filter((f) => !have.has(f.path))];
+    const sel: Record<string, boolean> = { ...scanSelected };
+    for (const f of found) {
+      if (!(f.path in sel)) sel[f.path] = !known.has(f.path);
+    }
+    scanSelected = sel;
+  }
+
   async function openScan() {
     addOpen = false;
     scanModal = true;
     scanning = true;
     scanResults = [];
+    scanSelected = {};
+    scanBlocked = [];
     try {
-      const found = await scanRepos();
-      const known = new Set(projects.map((p) => p.path));
-      scanResults = found;
-      const sel: Record<string, boolean> = {};
-      for (const f of found) sel[f.path] = !known.has(f.path);
-      scanSelected = sel;
+      const report = await scanRepos();
+      scanBlocked = report.unreadableRoots;
+      mergeScanResults(report.repos);
+    } catch (e) {
+      error = errorMessage(e);
+    }
+    scanning = false;
+  }
+
+  async function scanPickedFolder() {
+    const picked = await openDialog({ directory: true, title: "Scan a folder for repositories" });
+    if (typeof picked !== "string") return;
+    scanning = true;
+    try {
+      mergeScanResults(await scanFolder(picked));
     } catch (e) {
       error = errorMessage(e);
     }
@@ -597,6 +621,13 @@
       <div class="mono modal-sub">looks a few levels deep in your usual project folders</div>
     </div>
     <div class="modal-body">
+      {#if scanBlocked.length > 0}
+        <div class="hub-error inline">
+          macOS blocked access to {scanBlocked.join(", ")}. Allow Trident under System Settings →
+          Privacy &amp; Security → Files and Folders, or use "Scan a folder" below - folders you pick
+          yourself are always readable.
+        </div>
+      {/if}
       {#if scanning}
         <div class="mono scan-note">Scanning…</div>
       {:else if scanResults.length === 0}
@@ -618,6 +649,8 @@
         </div>
       {/if}
       <div class="modal-actions">
+        <button class="cancel" onclick={scanPickedFolder} disabled={scanning}>Scan a folder…</button>
+        <span class="spacer"></span>
         <button class="cancel" onclick={() => (scanModal = false)}>Cancel</button>
         <button class="cta" disabled={scanning || scanPickedCount === 0} onclick={addScanned}>
           Add {scanPickedCount} repo{scanPickedCount === 1 ? "" : "s"}

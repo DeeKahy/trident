@@ -48,6 +48,7 @@ pub fn run() {
             commands::clone_repo,
             commands::init_repo,
             commands::scan_repos,
+            commands::scan_folder,
             github::github_account,
             github::github_repos,
             github::github_connect,
