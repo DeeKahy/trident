@@ -134,6 +134,30 @@ pub struct CommitDetails {
     pub files: Vec<FileChange>,
 }
 
+/// Share of one language in a repository, for the project-card bar.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LangStat {
+    pub name: String,
+    /// Percent of tracked bytes, 0-100; the list sums to ~100.
+    pub pct: u32,
+}
+
+/// Everything a project card on the hub shows about one repository.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoSummary {
+    pub name: String,
+    pub path: String,
+    pub branch: String,
+    /// Files with any kind of pending change.
+    pub changes: u32,
+    pub ahead: u32,
+    pub behind: u32,
+    pub last_commit_date: Option<String>,
+    pub langs: Vec<LangStat>,
+}
+
 /// One local or remote branch.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

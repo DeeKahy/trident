@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
+  import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
   import { listen } from "@tauri-apps/api/event";
   import DiffView from "$lib/DiffView.svelte";
   import Avatar from "$lib/Avatar.svelte";
+  import Hub from "$lib/Hub.svelte";
   import {
     openRepo,
     gitStatus,
@@ -60,7 +61,6 @@
 
   let error = $state<string | null>(null);
   let toast = $state<string | null>(null);
-  let manualPath = $state("");
 
   let railExpanded = $state(false);
   let branchMenu = $state(false);
@@ -99,11 +99,6 @@
 
   const LOG_PAGE = 200;
   const RECENT_KEY = "trident.recentRepos";
-  interface RecentRepo {
-    path: string;
-    name: string;
-  }
-  let recentRepos = $state<RecentRepo[]>(loadRecent());
 
   // ---------- derived ----------
   const PALETTE = ["#e2683c", "#2f8f5b", "#9b59b6", "#0f8f6b", "#d9534f", "#b8860b", "#5b3df5"];
@@ -196,19 +191,16 @@
   let selectedEditable = $derived(!!selectedCommit && selectedCommit.localOnly && selectedIsHead);
 
   // ---------- helpers ----------
-  function loadRecent(): RecentRepo[] {
-    try {
-      return JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
-    } catch {
-      return [];
-    }
-  }
+  /// Keep the hub's project list up to date: newest first, capped, deduped.
   function rememberRepo(info: RepoInfo) {
-    recentRepos = [
-      { path: info.path, name: info.name },
-      ...recentRepos.filter((r) => r.path !== info.path),
-    ].slice(0, 8);
-    localStorage.setItem(RECENT_KEY, JSON.stringify(recentRepos));
+    let list: { path: string; name: string }[] = [];
+    try {
+      list = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
+    } catch {
+      list = [];
+    }
+    list = [{ path: info.path, name: info.name }, ...list.filter((r) => r.path !== info.path)].slice(0, 24);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list));
   }
 
   function relTime(iso: string): string {
@@ -235,11 +227,6 @@
   }
 
   // ---------- data flow ----------
-  async function openFromDialog() {
-    const picked = await openDialog({ directory: true, title: "Open repository" });
-    if (typeof picked === "string") await openPath(picked);
-  }
-
   async function openPath(path: string) {
     error = null;
     try {
@@ -628,38 +615,9 @@
   }
 </script>
 
-<!-- ==================== WELCOME ==================== -->
+<!-- ==================== PROJECT HUB ==================== -->
 {#if repo === null}
-  <main class="welcome">
-    <div class="welcome-logo">
-      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="9" r="2.4" /><path d="M6 8.4v7.2M8.2 6.6c6 0 7.6 1 7.6 4.2" /></svg>
-    </div>
-    <h1>Trident</h1>
-    <p>Version control that explains itself.</p>
-    <button class="btn-accent big" onclick={openFromDialog}>Open repository…</button>
-    <form
-      class="manual"
-      onsubmit={(e) => {
-        e.preventDefault();
-        if (manualPath.trim()) openPath(manualPath.trim());
-      }}
-    >
-      <input placeholder="…or paste a repo path" bind:value={manualPath} />
-      <button type="submit" class="btn">Open</button>
-    </form>
-    {#if recentRepos.length > 0}
-      <div class="recent">
-        <div class="mono label">RECENT</div>
-        {#each recentRepos as r (r.path)}
-          <button class="recent-row" onclick={() => openPath(r.path)}>
-            <span class="recent-name">{r.name}</span>
-            <span class="recent-path mono">{r.path}</span>
-          </button>
-        {/each}
-      </div>
-    {/if}
-    {#if error}<div class="error-text">{error}</div>{/if}
-  </main>
+  <Hub onopen={openPath} />
 {:else}
   <!-- ==================== WORKSPACE ==================== -->
   <main class="app">
@@ -1534,42 +1492,6 @@
     height: 16px;
   }
 
-  /* ---------- welcome ---------- */
-  .welcome {
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 0.8rem;
-    background: radial-gradient(120% 90% at 50% 0%, var(--surface2) 0%, var(--bg) 70%);
-  }
-  .welcome-logo {
-    width: 56px;
-    height: 56px;
-    border-radius: 15px;
-    background: var(--accent);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 12px 30px -10px var(--accent);
-  }
-  .welcome h1 {
-    font-size: 2.4rem;
-    margin: 0;
-    letter-spacing: -0.02em;
-  }
-  .welcome p {
-    color: var(--muted);
-    margin: 0 0 0.8rem;
-  }
-  .manual {
-    display: flex;
-    gap: 0.5rem;
-  }
-  .manual input {
-    width: 300px;
-  }
   input,
   textarea {
     background: var(--surface);
@@ -1585,49 +1507,6 @@
   textarea:focus {
     border-color: var(--accent);
   }
-  .recent {
-    margin-top: 1.2rem;
-    width: 430px;
-    max-width: 90vw;
-  }
-  .recent .label {
-    font-size: 9.5px;
-    padding: 0 10px 6px;
-    display: block;
-  }
-  .recent-row {
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-    width: 100%;
-    background: none;
-    border: none;
-    border-radius: 9px;
-    padding: 0.45rem 0.7rem;
-    cursor: pointer;
-    text-align: left;
-  }
-  .recent-row:hover {
-    background: var(--surface);
-  }
-  .recent-name {
-    font-weight: 600;
-    font-size: 13px;
-    flex: none;
-  }
-  .recent-path {
-    color: var(--muted);
-    font-size: 10.5px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .error-text {
-    color: var(--danger);
-    font-size: 12.5px;
-    max-width: 460px;
-  }
-
   /* ---------- app frame ---------- */
   .app {
     height: 100vh;

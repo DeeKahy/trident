@@ -5,9 +5,11 @@
 use std::path::PathBuf;
 
 use crate::git::diff::DiffMode;
-use crate::git::types::{BranchInfo, CommitDetails, CommitInfo, RepoInfo, Status, TagInfo};
+use crate::git::types::{
+    BranchInfo, CommitDetails, CommitInfo, RepoInfo, RepoSummary, Status, TagInfo,
+};
 use crate::git::{
-    branch, commit, diff, ignore, log, remote, repo, stage, stash, status, tag, GitError,
+    branch, commit, diff, ignore, log, remote, repo, stage, stash, status, summary, tag, GitError,
 };
 
 type CmdResult<T> = Result<T, GitError>;
@@ -20,6 +22,21 @@ pub async fn open_repo(path: String) -> CmdResult<RepoInfo> {
 #[tauri::command]
 pub async fn git_status(repo_path: String) -> CmdResult<Status> {
     status::status(&PathBuf::from(repo_path))
+}
+
+#[tauri::command]
+pub async fn repo_summary(path: String) -> CmdResult<RepoSummary> {
+    summary::repo_summary(&PathBuf::from(path))
+}
+
+#[tauri::command]
+pub async fn clone_repo(url: String, dest: String) -> CmdResult<RepoInfo> {
+    repo::clone_repo(&url, &PathBuf::from(dest))
+}
+
+#[tauri::command]
+pub async fn init_repo(path: String) -> CmdResult<RepoInfo> {
+    repo::init_repo(&PathBuf::from(path))
 }
 
 #[tauri::command]

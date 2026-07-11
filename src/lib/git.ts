@@ -26,6 +26,22 @@ export interface FileChange {
   deletions: number;
 }
 
+export interface LangStat {
+  name: string;
+  pct: number;
+}
+
+export interface RepoSummary {
+  name: string;
+  path: string;
+  branch: string;
+  changes: number;
+  ahead: number;
+  behind: number;
+  lastCommitDate: string | null;
+  langs: LangStat[];
+}
+
 export interface TagInfo {
   name: string;
   hash: string;
@@ -242,6 +258,26 @@ export function gitRevert(repoPath: string, hash: string): Promise<void> {
 
 export function gitSwitchDetached(repoPath: string, hash: string): Promise<void> {
   return invoke("git_switch_detached", { repoPath, hash });
+}
+
+export function repoSummary(path: string): Promise<RepoSummary> {
+  return invoke("repo_summary", { path });
+}
+
+export function cloneRepo(url: string, dest: string): Promise<RepoInfo> {
+  return invoke("clone_repo", { url, dest });
+}
+
+export function initRepo(path: string): Promise<RepoInfo> {
+  return invoke("init_repo", { path });
+}
+
+export function openInEditor(path: string): Promise<void> {
+  return invoke("open_in_editor", { path });
+}
+
+export function openInTerminal(path: string): Promise<void> {
+  return invoke("open_in_terminal", { path });
 }
 
 /** Render an unknown thrown value (usually a GitError) as a message. */

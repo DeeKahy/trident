@@ -1,5 +1,6 @@
 mod commands;
 mod git;
+mod shell;
 mod watcher;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -42,6 +43,11 @@ pub fn run() {
             commands::git_undo_last,
             commands::git_revert,
             commands::git_switch_detached,
+            commands::repo_summary,
+            commands::clone_repo,
+            commands::init_repo,
+            shell::open_in_editor,
+            shell::open_in_terminal,
             watcher::watch_repo,
         ])
         .run(tauri::generate_context!())
