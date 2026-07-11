@@ -39,8 +39,27 @@ pub struct CodeStats {
     pub contributors: Vec<Contributor>,
 }
 
-/// Directories never worth counting even when a repo forgot to ignore them.
-const EXCLUDED: &[&str] = &["node_modules", "target", "dist", "build", "vendor", ".git"];
+/// Never counted: junk directories (even when a repo forgot to ignore
+/// them) and machine-generated lock files, which would otherwise dwarf
+/// the hand-written code.
+const EXCLUDED: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    ".git",
+    "Cargo.lock",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lockb",
+    "composer.lock",
+    "Gemfile.lock",
+    "poetry.lock",
+    "uv.lock",
+    "go.sum",
+];
 
 fn count_lines(repo: &Path) -> (u32, u64, u64, u64, Vec<LangDetail>) {
     let mut languages = Languages::new();
@@ -151,6 +170,16 @@ mod tests {
         assert_eq!(ts.code, 2);
         assert!(s.code >= 5);
         assert!(s.files >= 2);
+    }
+
+    #[test]
+    fn lock_files_are_not_counted() {
+        let repo = TestRepo::with_initial_commit();
+        repo.write("package-lock.json", "{\n\"a\": 1,\n\"b\": 2\n}\n");
+        repo.write("app.json", "{\n\"real\": true\n}\n");
+        let s = code_stats(repo.path()).unwrap();
+        let json = s.languages.iter().find(|l| l.name == "JSON").unwrap();
+        assert_eq!(json.files, 1);
     }
 
     #[test]
