@@ -139,7 +139,37 @@
     untracked: boolean;
     add: number;
     del: number;
+    /// Set when the row stands in for a whole directory of changes
+    /// (build output, node_modules, and similar floods).
+    bundleCount?: number;
   }
+
+  const BUNDLE_THRESHOLD = 50;
+
+  /// Top-level directories with so many changed files that listing them
+  /// individually would freeze the UI (22k untracked files in target/).
+  let bundledDirs = $derived.by(() => {
+    if (!status) return new Set<string>();
+    const counts = new Map<string, number>();
+    const bump = (p: string) => {
+      const i = p.indexOf("/");
+      if (i > 0) {
+        const dir = p.slice(0, i);
+        counts.set(dir, (counts.get(dir) ?? 0) + 1);
+      }
+    };
+    for (const f of status.staged) bump(f.path);
+    for (const f of status.unstaged) bump(f.path);
+    for (const p of status.untracked) bump(p);
+    return new Set([...counts].filter(([, n]) => n > BUNDLE_THRESHOLD).map(([d]) => d));
+  });
+  const bundleOf = (path: string): string | null => {
+    const i = path.indexOf("/");
+    if (i <= 0) return null;
+    const dir = path.slice(0, i);
+    return bundledDirs.has(dir) ? dir : null;
+  };
+
   let changeRows = $derived.by<ChangeRow[]>(() => {
     if (!status) return [];
     const rows = new Map<string, ChangeRow>();
@@ -149,7 +179,40 @@
       }
       return rows.get(path)!;
     };
+    interface Bundle {
+      paths: Set<string>;
+      dirty: Set<string>; // unstaged or untracked
+      staged: Set<string>;
+      untrackedOnly: boolean;
+      add: number;
+      del: number;
+    }
+    const bundles = new Map<string, Bundle>();
+    const bundle = (dir: string): Bundle => {
+      if (!bundles.has(dir)) {
+        bundles.set(dir, {
+          paths: new Set(),
+          dirty: new Set(),
+          staged: new Set(),
+          untrackedOnly: true,
+          add: 0,
+          del: 0,
+        });
+      }
+      return bundles.get(dir)!;
+    };
+
     for (const f of status.staged) {
+      const dir = bundleOf(f.path);
+      if (dir) {
+        const b = bundle(dir);
+        b.paths.add(f.path);
+        b.staged.add(f.path);
+        b.untrackedOnly = false;
+        b.add += f.additions;
+        b.del += f.deletions;
+        continue;
+      }
       const r = row(f.path);
       r.kind = f.kind;
       r.checked = true;
@@ -157,21 +220,52 @@
       r.del += f.deletions;
     }
     for (const f of status.unstaged) {
+      const dir = bundleOf(f.path);
+      if (dir) {
+        const b = bundle(dir);
+        b.paths.add(f.path);
+        b.dirty.add(f.path);
+        b.untrackedOnly = false;
+        b.add += f.additions;
+        b.del += f.deletions;
+        continue;
+      }
       const r = row(f.path);
       if (!r.checked) r.kind = f.kind;
       r.add += f.additions;
       r.del += f.deletions;
     }
     for (const p of status.untracked) {
+      const dir = bundleOf(p);
+      if (dir) {
+        const b = bundle(dir);
+        b.paths.add(p);
+        b.dirty.add(p);
+        continue;
+      }
       const r = row(p);
       r.kind = "added";
       r.untracked = true;
       r.add = untrackedCounts[p] ?? 0;
     }
     for (const p of status.conflicted) {
+      if (bundleOf(p)) continue;
       row(p).kind = "conflict";
     }
-    return [...rows.values()];
+
+    const result = [...rows.values()];
+    for (const [dir, b] of bundles) {
+      result.push({
+        path: `${dir}/`,
+        kind: b.untrackedOnly ? "added" : "modified",
+        checked: b.paths.size > 0 && b.dirty.size === 0,
+        untracked: b.untrackedOnly,
+        add: b.add,
+        del: b.del,
+        bundleCount: b.paths.size,
+      });
+    }
+    return result;
   });
   let checkedCount = $derived(changeRows.filter((r) => r.checked).length);
   let allChecked = $derived(changeRows.length > 0 && checkedCount === changeRows.length);
@@ -264,9 +358,12 @@
       stashes = st;
       const counts: Record<string, number> = {};
       await Promise.all(
-        s.untracked.slice(0, 100).map(async (p) => {
-          counts[p] = await gitUntrackedLines(repo!.path, p);
-        })
+        s.untracked
+          .filter((p) => !bundleOf(p))
+          .slice(0, 100)
+          .map(async (p) => {
+            counts[p] = await gitUntrackedLines(repo!.path, p);
+          })
       );
       untrackedCounts = counts;
       await resyncDiff();
@@ -294,6 +391,11 @@
     if (!repo) return;
     const row = changeRows.find((r) => r.path === path);
     if (!row) return;
+    if (row.bundleCount) {
+      // A whole directory of changes: nothing sensible to preview.
+      diffText = "";
+      return;
+    }
     const mode: DiffMode = row.untracked
       ? "untracked"
       : status!.unstaged.some((f) => f.path === path)
@@ -927,11 +1029,20 @@
                   <button class="file-main" onclick={() => selectRow(row.path)}>
                     <span class="badge {row.kind}">{badgeOf(row.kind)}</span>
                     <span class="file-path mono" class:strike={!row.checked && false}>{row.path}</span>
+                    {#if row.bundleCount}
+                      <span class="bundle-pill mono">{row.bundleCount.toLocaleString()} files</span>
+                    {/if}
                   </button>
-                  <button class="icon-btn" title="Add to .gitignore" onclick={() => ignoreRow(row.path)}>
+                  <button
+                    class="icon-btn"
+                    title={row.bundleCount ? "Add this folder to .gitignore" : "Add to .gitignore"}
+                    onclick={() => ignoreRow(row.path)}
+                  >
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="M5.6 5.6l12.8 12.8" /></svg>
                   </button>
-                  <button class="icon-btn danger" title={row.untracked ? "Delete file" : "Discard changes"} onclick={() => discardRow(row)}>×</button>
+                  {#if !row.bundleCount}
+                    <button class="icon-btn danger" title={row.untracked ? "Delete file" : "Discard changes"} onclick={() => discardRow(row)}>×</button>
+                  {/if}
                   <span class="mono tiny add-text">+{row.add}</span>
                   <span class="mono tiny del-text">-{row.del}</span>
                 </div>
@@ -962,7 +1073,14 @@
                 </div>
               {/if}
               <div class="diff-scroll">
-                <DiffView diff={diffText} emptyMessage={changeRows.length === 0 ? "Nothing to show" : "Select a file above"} />
+                <DiffView
+                  diff={diffText}
+                  emptyMessage={selectedRow?.bundleCount
+                    ? `${selectedRow.bundleCount} files in ${selectedRow.path} - too many to preview. Stage them together, or hit the ignore button to keep them out of git.`
+                    : changeRows.length === 0
+                      ? "Nothing to show"
+                      : "Select a file above"}
+                />
               </div>
             </div>
 
@@ -2235,6 +2353,14 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .bundle-pill {
+    flex: none;
+    font-size: 9.5px;
+    color: var(--warn);
+    background: var(--warn-soft);
+    padding: 1px 7px;
+    border-radius: 20px;
   }
   .ignored-strip {
     display: flex;
