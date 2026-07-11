@@ -1,5 +1,6 @@
 <script lang="ts">
   import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
+  import { langColor } from "$lib/langColors";
   import { listen } from "@tauri-apps/api/event";
   import DiffView from "$lib/DiffView.svelte";
   import Avatar from "$lib/Avatar.svelte";
@@ -39,6 +40,8 @@
     gitSwitchDetached,
     gitUntrackedLines,
     watchRepo,
+    codeStats,
+    type CodeStats,
     errorMessage,
     type RepoInfo,
     type Status,
@@ -65,8 +68,10 @@
   let railExpanded = $state(false);
   let branchMenu = $state(false);
   let syncMenu = $state(false);
-  let centerMode = $state<"history" | "releases">("history");
+  let centerMode = $state<"history" | "releases" | "stats">("history");
   let scope = $state<"all" | "current">("current");
+  let stats = $state<CodeStats | null>(null);
+  let statsLoading = $state(false);
   let logExhausted = $state(false);
   let loadingMore = $state(false);
 
@@ -389,6 +394,7 @@
       commits = [];
       logExhausted = false;
       mainDismissed = false;
+      stats = null;
       ignoredSession = [];
       await refresh();
       await watchRepo(repo.path);
@@ -699,6 +705,27 @@
     await refresh();
   }
 
+  /// Recount on every visit; the previous numbers stay visible meanwhile.
+  async function openStats() {
+    centerMode = "stats";
+    if (!repo || statsLoading) return;
+    statsLoading = true;
+    try {
+      stats = await codeStats(repo.path);
+    } catch (e) {
+      error = errorMessage(e);
+    }
+    statsLoading = false;
+  }
+
+  function repoAge(iso: string): string {
+    const days = (Date.now() - new Date(iso).getTime()) / 86400000;
+    if (days < 1) return "today";
+    if (days < 60) return `${Math.round(days)} days`;
+    if (days < 700) return `${Math.round(days / 30.4)} months`;
+    return `${(days / 365).toFixed(1)} years`;
+  }
+
   async function loadMore() {
     if (!repo || loadingMore) return;
     loadingMore = true;
@@ -976,6 +1003,7 @@
           <div class="seg">
             <button class:on={centerMode === "history"} onclick={() => (centerMode = "history")}>History</button>
             <button class:on={centerMode === "releases"} onclick={() => (centerMode = "releases")}>Releases</button>
+            <button class:on={centerMode === "stats"} onclick={openStats}>Stats</button>
           </div>
           {#if centerMode === "history"}
             <div class="seg small">
@@ -985,7 +1013,13 @@
           {/if}
           <span class="spacer"></span>
           <span class="mono tiny muted-text">
-            {centerMode === "history" ? `${commits.length} commits` : `${tags.length} releases`}
+            {centerMode === "history"
+              ? `${commits.length} commits`
+              : centerMode === "releases"
+                ? `${tags.length} releases`
+                : stats
+                  ? `${stats.code.toLocaleString()} lines of code`
+                  : ""}
           </span>
         </div>
 
@@ -1023,7 +1057,7 @@
               </button>
             {/if}
           </div>
-        {:else}
+        {:else if centerMode === "releases"}
           <div class="center-scroll releases">
             <button class="btn-accent create-release" onclick={openReleaseModal}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
@@ -1046,6 +1080,92 @@
             {:else}
               <div class="empty-note">No releases yet. A release is a permanent bookmark on one commit - create the first one above.</div>
             {/each}
+          </div>
+        {:else}
+          <div class="center-scroll stats-pane">
+            {#if statsLoading && !stats}
+              <div class="empty-note">Counting every line…</div>
+            {:else if stats}
+              <div class="stat-tiles">
+                <div class="stat-tile">
+                  <span class="stat-num mono">{stats.code.toLocaleString()}</span>
+                  <span class="stat-label">lines of code</span>
+                </div>
+                <div class="stat-tile">
+                  <span class="stat-num mono">{stats.files.toLocaleString()}</span>
+                  <span class="stat-label">files</span>
+                </div>
+                <div class="stat-tile">
+                  <span class="stat-num mono">{stats.commits.toLocaleString()}</span>
+                  <span class="stat-label">commits</span>
+                </div>
+                <div class="stat-tile">
+                  <span class="stat-num mono">
+                    {stats.code + stats.comments > 0
+                      ? Math.round((stats.comments / (stats.code + stats.comments)) * 100)
+                      : 0}%
+                  </span>
+                  <span class="stat-label">comments</span>
+                </div>
+                <div class="stat-tile">
+                  <span class="stat-num mono">{stats.contributors.length}</span>
+                  <span class="stat-label">contributor{stats.contributors.length === 1 ? "" : "s"}</span>
+                </div>
+                <div class="stat-tile">
+                  <span class="stat-num mono">{stats.firstCommitDate ? repoAge(stats.firstCommitDate) : "-"}</span>
+                  <span class="stat-label">of history</span>
+                </div>
+              </div>
+
+              {#if stats.languages.length > 0}
+                {@const maxCode = stats.languages[0].code}
+                <div class="mono section-label">LANGUAGES</div>
+                {#each stats.languages as l (l.name)}
+                  <div class="lang-row">
+                    <span class="dot" style="background:{langColor(l.name)}"></span>
+                    <span class="lang-name">{l.name}</span>
+                    <span class="lang-track">
+                      <span
+                        class="lang-fill"
+                        style="width:{Math.max((l.code / maxCode) * 100, 2)}%;background:{langColor(l.name)}"
+                      ></span>
+                    </span>
+                    <span class="mono lang-nums" title="{l.files} files · {l.comments.toLocaleString()} comment lines">
+                      {l.code.toLocaleString()}
+                    </span>
+                  </div>
+                {/each}
+              {/if}
+
+              {#if stats.contributors.length > 0}
+                <div class="mono section-label">CONTRIBUTORS</div>
+                {#each stats.contributors as person (person.email + person.name)}
+                  <div class="contrib-row">
+                    <Avatar email={person.email} name={person.name} size={22} />
+                    <span class="contrib-name">{person.name}</span>
+                    <span class="contrib-track">
+                      <span
+                        class="lang-fill"
+                        style="width:{Math.max((person.commits / stats.contributors[0].commits) * 100, 2)}%;background:var(--accent)"
+                      ></span>
+                    </span>
+                    <span class="mono lang-nums">{person.commits.toLocaleString()}</span>
+                  </div>
+                {/each}
+              {/if}
+
+              <div class="mono stats-fun">
+                {#if stats.code > 0}
+                  Printed at 50 lines a page, this codebase is a {Math.max(1, Math.round(stats.code / 50)).toLocaleString()}-page book.
+                  {#if stats.comments > 0}
+                    There is one comment line for every {Math.max(1, Math.round(stats.code / stats.comments))} lines of code.
+                  {/if}
+                {/if}
+              </div>
+              <div class="mono stats-foot">counted by tokei rules · .gitignore respected · recounted each visit</div>
+            {:else}
+              <div class="empty-note">No stats to show.</div>
+            {/if}
           </div>
         {/if}
       </section>
@@ -2273,6 +2393,90 @@
   /* releases */
   .center-scroll.releases {
     padding: 16px 18px;
+  }
+
+  /* stats */
+  .center-scroll.stats-pane {
+    padding: 16px 18px;
+  }
+  .stat-tiles {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+  .stat-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    padding: 13px 15px;
+  }
+  .stat-num {
+    font-size: 21px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .stat-label {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .stats-pane .section-label {
+    padding: 12px 2px 8px;
+  }
+  .lang-row,
+  .contrib-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 5px 2px;
+  }
+  .lang-name,
+  .contrib-name {
+    width: 110px;
+    flex: none;
+    font-size: 12.5px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .lang-track,
+  .contrib-track {
+    flex: 1;
+    height: 8px;
+    background: var(--border);
+    border-radius: 20px;
+    overflow: hidden;
+  }
+  .lang-fill {
+    display: block;
+    height: 100%;
+    border-radius: 20px;
+  }
+  .lang-nums {
+    width: 74px;
+    flex: none;
+    text-align: right;
+    font-size: 11px;
+    color: var(--ink2);
+  }
+  .stats-fun {
+    margin-top: 18px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--ink2);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    padding: 11px 13px;
+  }
+  .stats-foot {
+    margin-top: 10px;
+    font-size: 9.5px;
+    color: var(--muted);
   }
   .create-release {
     width: 100%;

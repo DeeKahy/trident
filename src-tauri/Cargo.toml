@@ -26,6 +26,7 @@ serde_json = "1"
 notify = "8"
 ureq = { version = "2", features = ["json"] }
 keyring = "3"
+tokei = "12"
 
 [dev-dependencies]
 tempfile = "3"

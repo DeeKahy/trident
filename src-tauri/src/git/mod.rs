@@ -14,6 +14,7 @@ pub mod repo;
 pub mod scan;
 pub mod stage;
 pub mod stash;
+pub mod stats;
 pub mod status;
 pub mod summary;
 pub mod tag;

@@ -306,6 +306,31 @@ export function openInTerminal(path: string): Promise<void> {
   return invoke("open_in_terminal", { path });
 }
 
+export interface LangDetail {
+  name: string;
+  files: number;
+  code: number;
+  comments: number;
+  blanks: number;
+}
+
+export interface Contributor {
+  name: string;
+  email: string;
+  commits: number;
+}
+
+export interface CodeStats {
+  files: number;
+  code: number;
+  comments: number;
+  blanks: number;
+  commits: number;
+  firstCommitDate: string | null;
+  languages: LangDetail[];
+  contributors: Contributor[];
+}
+
 export interface ScanReport {
   repos: FoundRepo[];
   unreadableRoots: string[];
@@ -317,6 +342,10 @@ export function scanRepos(): Promise<ScanReport> {
 
 export function scanFolder(path: string): Promise<FoundRepo[]> {
   return invoke("scan_folder", { path });
+}
+
+export function codeStats(repoPath: string): Promise<CodeStats> {
+  return invoke("code_stats", { repoPath });
 }
 
 export function githubAccount(): Promise<GithubUser | null> {

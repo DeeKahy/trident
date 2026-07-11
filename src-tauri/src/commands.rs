@@ -52,6 +52,11 @@ pub async fn scan_folder(path: String) -> CmdResult<Vec<FoundRepo>> {
 }
 
 #[tauri::command]
+pub async fn code_stats(repo_path: String) -> CmdResult<crate::git::stats::CodeStats> {
+    crate::git::stats::code_stats(&PathBuf::from(repo_path))
+}
+
+#[tauri::command]
 pub async fn git_log(
     repo_path: String,
     limit: u32,

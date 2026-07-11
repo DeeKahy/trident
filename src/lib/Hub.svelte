@@ -1,5 +1,6 @@
 <script lang="ts">
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { langColor } from "$lib/langColors";
   import {
     repoSummary,
     cloneRepo,
@@ -98,34 +99,6 @@
   });
   const clonePathOf = (r: GithubRepo) => localPathByUrl.get(normalizeGitUrl(r.cloneUrl)) ?? null;
 
-  const LANG_COLORS: Record<string, string> = {
-    Rust: "#b7410e",
-    TypeScript: "#3178c6",
-    JavaScript: "#f1c40f",
-    Svelte: "#ff3e00",
-    Vue: "#42b883",
-    Python: "#3572a5",
-    Ruby: "#cc342d",
-    Go: "#00add8",
-    Java: "#b07219",
-    Kotlin: "#a97bff",
-    Swift: "#f05138",
-    C: "#555555",
-    "C++": "#f34b7d",
-    "C#": "#178600",
-    PHP: "#4f5d95",
-    Elixir: "#6e4a7e",
-    Zig: "#ec915c",
-    Lua: "#000080",
-    CSS: "#563d7c",
-    HTML: "#e34c26",
-    Shell: "#89e051",
-    SQL: "#336791",
-    Astro: "#ff5d01",
-    Jupyter: "#f37726",
-    Docker: "#2496ed",
-  };
-  const langColor = (name: string) => LANG_COLORS[name] ?? "#8f877b";
 
   function loadRecent(): RecentRepo[] {
     try {
