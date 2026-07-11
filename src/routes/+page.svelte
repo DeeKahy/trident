@@ -100,6 +100,63 @@
   const LOG_PAGE = 200;
   const RECENT_KEY = "trident.recentRepos";
 
+  // ---------- resizable panes ----------
+  const RIGHT_W_KEY = "trident.rightPaneWidth";
+  const FILES_H_KEY = "trident.fileListHeight";
+
+  function storedInt(key: string, fallback: number): number {
+    const n = parseInt(localStorage.getItem(key) ?? "");
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  let rightWidth = $state(storedInt(RIGHT_W_KEY, 472));
+  let fileListHeight = $state(storedInt(FILES_H_KEY, 150));
+  let panesEl = $state<HTMLDivElement | null>(null);
+
+  /// Generic pointer-drag helper for the splitters: calls `apply` with each
+  /// pointer position and persists via `save` when the drag ends.
+  function dragSplitter(down: PointerEvent, apply: (ev: PointerEvent) => void, save: () => void) {
+    down.preventDefault();
+    document.body.style.userSelect = "none";
+    const move = (ev: PointerEvent) => apply(ev);
+    const up = () => {
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      save();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  function startColDrag(e: PointerEvent) {
+    dragSplitter(
+      e,
+      (ev) => {
+        if (!panesEl) return;
+        const rect = panesEl.getBoundingClientRect();
+        // History keeps at least 380px; the changes pane at least 360px.
+        const max = rect.width - 54 - 380;
+        rightWidth = Math.round(Math.min(Math.max(rect.right - ev.clientX, 360), max));
+      },
+      () => localStorage.setItem(RIGHT_W_KEY, String(rightWidth))
+    );
+  }
+
+  function startRowDrag(e: PointerEvent) {
+    const top = (e.currentTarget as HTMLElement).parentElement
+      ?.querySelector(".file-list")
+      ?.getBoundingClientRect().top;
+    dragSplitter(
+      e,
+      (ev) => {
+        if (top === undefined) return;
+        fileListHeight = Math.round(Math.min(Math.max(ev.clientY - top, 60), 500));
+      },
+      () => localStorage.setItem(FILES_H_KEY, String(fileListHeight))
+    );
+  }
+
   // ---------- derived ----------
   const PALETTE = ["#e2683c", "#2f8f5b", "#9b59b6", "#0f8f6b", "#d9534f", "#b8860b", "#5b3df5"];
 
@@ -839,7 +896,7 @@
     {/if}
 
     <!-- three panes -->
-    <div class="panes">
+    <div class="panes" bind:this={panesEl}>
       <!-- LEFT: branch rail -->
       <nav
         class="rail"
@@ -994,7 +1051,15 @@
       </section>
 
       <!-- RIGHT: working / detail -->
-      <section class="right">
+      <div
+        class="splitter-v"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize history and changes panes"
+        onpointerdown={startColDrag}
+      ></div>
+
+      <section class="right" style="width:{rightWidth}px">
         {#if rightView === "working"}
           <div class="right-col">
             <div class="changes-head">
@@ -1018,7 +1083,7 @@
               <button class="ghost-btn" onclick={stashAll} disabled={changeRows.length === 0}>Stash all</button>
             </div>
 
-            <div class="file-list">
+            <div class="file-list" style="height:{fileListHeight}px">
               {#each changeRows as row (row.path)}
                 <div class="file-row" class:dim={!row.checked} class:selected={selectedPath === row.path}>
                   <button class="checkbox small" class:on={row.checked} onclick={() => toggleRow(row)} aria-label="stage">
@@ -1061,6 +1126,14 @@
                 </div>
               {/if}
             </div>
+
+            <div
+              class="splitter-h"
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="Resize file list and diff"
+              onpointerdown={startRowDrag}
+            ></div>
 
             <div class="big-diff">
               {#if selectedRow}
@@ -2252,6 +2325,30 @@
     background: var(--surface);
     min-height: 0;
   }
+  .splitter-v {
+    width: 6px;
+    margin: 0 -3px;
+    flex: none;
+    cursor: col-resize;
+    z-index: 5;
+    background: none;
+  }
+  .splitter-v:hover,
+  .splitter-v:active {
+    background: var(--accent-soft);
+  }
+  .splitter-h {
+    height: 6px;
+    margin: -3px 0;
+    flex: none;
+    cursor: row-resize;
+    z-index: 5;
+    background: none;
+  }
+  .splitter-h:hover,
+  .splitter-h:active {
+    background: var(--accent-soft);
+  }
   .right-col {
     display: flex;
     flex-direction: column;
@@ -2274,11 +2371,12 @@
     border-radius: 20px;
   }
   .file-list {
-    max-height: 150px;
+    height: 150px;
     overflow: auto;
     padding: 5px 8px;
     border-bottom: 1px solid var(--border);
     flex: none;
+    box-sizing: border-box;
   }
   .file-row {
     display: flex;
