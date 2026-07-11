@@ -109,10 +109,10 @@ Each of these is a mini-project. They most define whether it "feels like Fork."
 
 ## Phase 5 — GitHub & GitLab integration
 
-The reason Trident exists: first-class forge support, not just plain git remotes.
+The reason Trident exists: first-class GitHub and GitLab support, not just plain git remotes.
 
 - [ ] OAuth device-flow sign-in for GitHub and GitLab (tokens in OS keychain)
-- [ ] Detect forge from remote URL (github.com, gitlab.com, self-hosted GitLab)
+- [ ] Detect the hosting service from the remote URL (github.com, gitlab.com, self-hosted GitLab)
 - [ ] Pull requests / merge requests: list, view, check out a PR/MR branch locally
 - [ ] Create a PR/MR from the current branch (the natural end of the guided sync loop)
 - [ ] CI status checks shown on branches and commits

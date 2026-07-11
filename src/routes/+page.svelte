@@ -1173,7 +1173,7 @@
           </button>
           <div class="toggle-body">
             <div class="toggle-title">Push the tag to origin</div>
-            <div class="mono tiny muted-text">it shows up on GitHub/GitLab under tags (release pages come with forge sign-in, Phase 5)</div>
+            <div class="mono tiny muted-text">it shows up on GitHub/GitLab under tags (release pages come once accounts connect)</div>
           </div>
         </label>
 

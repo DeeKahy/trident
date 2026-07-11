@@ -87,7 +87,7 @@
   });
 
   let visible = $derived.by(() => {
-    // Forge filters have nothing to show until forge sign-in exists.
+    // GitHub/GitLab filters have nothing to show until account sign-in exists.
     if (filter === "GitHub" || filter === "GitLab") return [];
     const q = query.trim().toLowerCase();
     return projects.filter((p) => {
@@ -259,7 +259,7 @@
       <svg width="13" height="13" viewBox="0 0 16 16" fill="var(--gitlab)"><path d="M8 15.5l2.94-9.05H5.06L8 15.5z" opacity=".9" /><path d="M8 15.5L5.06 6.45H1.34L8 15.5zM8 15.5l2.94-9.05h3.72L8 15.5z" /><path d="M1.34 6.45L.45 9.2c-.08.25 0 .52.22.67L8 15.5 1.34 6.45zM14.66 6.45l.89 2.75c.08.25 0 .52-.22.67L8 15.5l6.66-9.05z" /></svg>
       GitLab · not connected
     </span>
-    <span class="mono acct-note">forge sign-in lands in Phase 5 · your repos will show up here</span>
+    <span class="mono acct-note">account sign-in is coming to Trident soon · your repos will show up here</span>
     <span class="spacer"></span>
   </div>
 
@@ -272,7 +272,7 @@
     {#if filter === "GitHub" || filter === "GitLab"}
       <div class="no-results">
         <div class="nr-title">No {filter} account connected</div>
-        <div class="mono nr-sub">forge sign-in lands in Phase 5</div>
+        <div class="mono nr-sub">account sign-in is coming to Trident soon</div>
       </div>
     {:else if visible.length === 0}
       <div class="no-results">
