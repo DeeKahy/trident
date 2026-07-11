@@ -8,6 +8,19 @@ with [Tauri](https://tauri.app) (Rust backend) and [Svelte](https://svelte.dev).
 staged/unstaged/untracked changes, commit history, branches, and diffs. Nothing can
 mutate a repository yet — see [ROADMAP.md](ROADMAP.md) for where this is going.
 
+## Install
+
+macOS (Apple Silicon):
+
+```sh
+brew install --cask deekahy/tap/trident
+```
+
+Updates arrive with `brew upgrade`. Installers for Windows (.msi/.exe) and
+Linux (.deb/.rpm/.AppImage) are on the
+[releases page](https://github.com/DeeKahy/trident/releases). Bundles are not
+code-signed yet, so macOS and Windows show a warning on first launch.
+
 ## Architecture
 
 - `src-tauri/src/git/` — the git backend: plain Rust functions that shell out to the
