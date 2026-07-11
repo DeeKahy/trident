@@ -13,13 +13,17 @@ mutate a repository yet — see [ROADMAP.md](ROADMAP.md) for where this is going
 macOS (Apple Silicon):
 
 ```sh
-brew install --cask deekahy/tap/trident
+brew install --cask --no-quarantine deekahy/tap/trident
 ```
 
-Updates arrive with `brew upgrade`. Installers for Windows (.msi/.exe) and
-Linux (.deb/.rpm/.AppImage) are on the
-[releases page](https://github.com/DeeKahy/trident/releases). Bundles are not
-code-signed yet, so macOS and Windows show a warning on first launch.
+Updates arrive with `brew upgrade`. The `--no-quarantine` flag matters: the
+app is not code-signed yet, and without it macOS refuses the first launch
+with a misleading "trident is damaged" message. An already-installed copy is
+fixed with `xattr -dr com.apple.quarantine /Applications/trident.app`.
+
+Installers for Windows (.msi/.exe) and Linux (.deb/.rpm/.AppImage) are on the
+[releases page](https://github.com/DeeKahy/trident/releases); Windows shows a
+SmartScreen warning for the same unsigned reason.
 
 ## Architecture
 
