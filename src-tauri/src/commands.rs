@@ -5,8 +5,10 @@
 use std::path::PathBuf;
 
 use crate::git::diff::DiffMode;
-use crate::git::types::{BranchInfo, CommitDetails, CommitInfo, RepoInfo, Status};
-use crate::git::{branch, commit, diff, log, remote, repo, stage, status, GitError};
+use crate::git::types::{BranchInfo, CommitDetails, CommitInfo, RepoInfo, Status, TagInfo};
+use crate::git::{
+    branch, commit, diff, ignore, log, remote, repo, stage, stash, status, tag, GitError,
+};
 
 type CmdResult<T> = Result<T, GitError>;
 
@@ -21,8 +23,13 @@ pub async fn git_status(repo_path: String) -> CmdResult<Status> {
 }
 
 #[tauri::command]
-pub async fn git_log(repo_path: String, limit: u32, skip: u32) -> CmdResult<Vec<CommitInfo>> {
-    log::log(&PathBuf::from(repo_path), limit, skip)
+pub async fn git_log(
+    repo_path: String,
+    limit: u32,
+    skip: u32,
+    all: bool,
+) -> CmdResult<Vec<CommitInfo>> {
+    log::log(&PathBuf::from(repo_path), limit, skip, all)
 }
 
 #[tauri::command]
@@ -43,6 +50,81 @@ pub async fn git_commit_diff(repo_path: String, hash: String) -> CmdResult<Strin
 #[tauri::command]
 pub async fn git_commit_details(repo_path: String, hash: String) -> CmdResult<CommitDetails> {
     log::commit_details(&PathBuf::from(repo_path), &hash)
+}
+
+#[tauri::command]
+pub async fn git_untracked_lines(repo_path: String, path: String) -> CmdResult<u32> {
+    Ok(status::untracked_line_count(&PathBuf::from(repo_path), &path))
+}
+
+#[tauri::command]
+pub async fn git_tags(repo_path: String) -> CmdResult<Vec<TagInfo>> {
+    tag::list_tags(&PathBuf::from(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_create_tag(
+    repo_path: String,
+    name: String,
+    message: String,
+    push: bool,
+) -> CmdResult<()> {
+    tag::create_tag(&PathBuf::from(repo_path), &name, &message, push)
+}
+
+#[tauri::command]
+pub async fn git_stash_list(repo_path: String) -> CmdResult<Vec<String>> {
+    stash::stash_list(&PathBuf::from(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_stash_all(repo_path: String, message: String) -> CmdResult<()> {
+    stash::stash_all(&PathBuf::from(repo_path), &message)
+}
+
+#[tauri::command]
+pub async fn git_add_ignore(repo_path: String, path: String) -> CmdResult<()> {
+    ignore::add_to_gitignore(&PathBuf::from(repo_path), &path)
+}
+
+#[tauri::command]
+pub async fn git_remove_ignore(repo_path: String, path: String) -> CmdResult<()> {
+    ignore::remove_from_gitignore(&PathBuf::from(repo_path), &path)
+}
+
+#[tauri::command]
+pub async fn git_update_merge(repo_path: String) -> CmdResult<()> {
+    remote::update_with_merge(&PathBuf::from(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_update_rebase(repo_path: String) -> CmdResult<()> {
+    remote::update_with_rebase(&PathBuf::from(repo_path))
+}
+
+#[tauri::command]
+pub async fn git_publish_branch(repo_path: String, name: String) -> CmdResult<()> {
+    remote::publish_branch(&PathBuf::from(repo_path), &name)
+}
+
+#[tauri::command]
+pub async fn git_reword_head(repo_path: String, message: String) -> CmdResult<String> {
+    commit::reword_head(&PathBuf::from(repo_path), &message)
+}
+
+#[tauri::command]
+pub async fn git_undo_last(repo_path: String, keep_changes: bool) -> CmdResult<()> {
+    commit::undo_last_commit(&PathBuf::from(repo_path), keep_changes)
+}
+
+#[tauri::command]
+pub async fn git_revert(repo_path: String, hash: String) -> CmdResult<()> {
+    commit::revert_commit(&PathBuf::from(repo_path), &hash)
+}
+
+#[tauri::command]
+pub async fn git_switch_detached(repo_path: String, hash: String) -> CmdResult<()> {
+    branch::switch_detached(&PathBuf::from(repo_path), &hash)
 }
 
 #[tauri::command]

@@ -25,7 +25,32 @@ pub fn status(repo: &Path) -> Result<Status> {
             "--untracked-files=all",
         ],
     )?;
-    Ok(parse(&raw))
+    let mut result = parse(&raw);
+
+    // Attach line counts. Two numstat calls cover staged and unstaged;
+    // untracked files are counted straight from disk.
+    let staged_counts = super::diff::numstat(repo, true)?;
+    let unstaged_counts = super::diff::numstat(repo, false)?;
+    for f in &mut result.staged {
+        if let Some(&(a, d)) = staged_counts.get(&f.path) {
+            f.additions = a;
+            f.deletions = d;
+        }
+    }
+    for f in &mut result.unstaged {
+        if let Some(&(a, d)) = unstaged_counts.get(&f.path) {
+            f.additions = a;
+            f.deletions = d;
+        }
+    }
+    Ok(result)
+}
+
+/// Line count of an untracked file, so the UI can show it as all-additions.
+pub fn untracked_line_count(repo: &Path, path: &str) -> u32 {
+    std::fs::read_to_string(repo.join(path))
+        .map(|s| s.lines().count() as u32)
+        .unwrap_or(0)
 }
 
 fn parse(raw: &str) -> Status {
@@ -90,6 +115,8 @@ fn push_change(result: &mut Status, xy: &str, path: &str, orig_path: Option<Stri
             path: path.to_string(),
             orig_path: orig_path.clone(),
             kind,
+            additions: 0,
+            deletions: 0,
         });
     }
     if let Some(kind) = ChangeKind::from_letter(y) {
@@ -97,6 +124,8 @@ fn push_change(result: &mut Status, xy: &str, path: &str, orig_path: Option<Stri
             path: path.to_string(),
             orig_path,
             kind,
+            additions: 0,
+            deletions: 0,
         });
     }
 }

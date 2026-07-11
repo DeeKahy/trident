@@ -12,25 +12,58 @@ use super::{run_git, GitError, Result};
 const FIELD_SEP: char = '\u{1f}';
 const RECORD_SEP: char = '\u{1e}';
 
-/// Return `limit` commits starting `skip` entries below HEAD, newest first.
-/// An empty (unborn) repository yields an empty list rather than an error.
-pub fn log(repo: &Path, limit: u32, skip: u32) -> Result<Vec<CommitInfo>> {
+/// Return `limit` commits starting `skip` entries below HEAD (or across
+/// every branch when `all` is set), newest first. An empty (unborn)
+/// repository yields an empty list rather than an error.
+pub fn log(repo: &Path, limit: u32, skip: u32, all: bool) -> Result<Vec<CommitInfo>> {
     let format = "%H\u{1f}%h\u{1f}%an\u{1f}%ae\u{1f}%aI\u{1f}%P\u{1f}%s\u{1e}";
     let limit_arg = format!("-n{limit}");
     let skip_arg = format!("--skip={skip}");
     let format_arg = format!("--format={format}");
+    let mut args = vec!["log", &limit_arg, &skip_arg, &format_arg];
+    if all {
+        args.push("--all");
+    }
 
-    let raw = match run_git(repo, &["log", &limit_arg, &skip_arg, &format_arg]) {
+    let raw = match run_git(repo, &args) {
         Ok(raw) => raw,
         // A repo with no commits has no HEAD to walk; that's an empty log.
         Err(e) if e.message.contains("does not have any commits") => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
 
+    let unpublished = unpublished_hashes(repo);
     Ok(raw
         .split(RECORD_SEP)
         .filter_map(|record| parse_record(record.trim_start_matches('\n')))
+        .map(|mut c| {
+            c.local_only = match &unpublished {
+                Some(set) => set.contains(&c.hash),
+                None => true, // remote exists but no upstream: nothing is published
+            };
+            c
+        })
         .collect())
+}
+
+/// Hashes on HEAD that its upstream doesn't have. `None` means the repo
+/// has a remote but the branch has no upstream (everything is local);
+/// a repo with no remotes at all returns an empty set (the concept of
+/// "published" doesn't apply).
+fn unpublished_hashes(repo: &Path) -> Option<std::collections::HashSet<String>> {
+    match run_git(repo, &["rev-list", "@{upstream}..HEAD"]) {
+        Ok(out) => Some(out.lines().map(str::to_string).collect()),
+        Err(_) => {
+            let has_remote = run_git(repo, &["remote"])
+                .map(|r| !r.trim().is_empty())
+                .unwrap_or(false);
+            if has_remote {
+                None
+            } else {
+                Some(std::collections::HashSet::new())
+            }
+        }
+    }
 }
 
 /// Full details for one commit: both signatures, the whole message, and the
@@ -71,6 +104,16 @@ pub fn commit_details(repo: &Path, hash: &str) -> Result<CommitDetails> {
         parents_raw.split(' ').map(str::to_string).collect()
     };
 
+    let mut files = changed_files(repo, hash)?;
+    let counts_raw = run_git(repo, &["show", "--format=", "--numstat", "-z", hash])?;
+    let counts = super::diff::parse_numstat(&counts_raw);
+    for f in &mut files {
+        if let Some(&(a, d)) = counts.get(&f.path) {
+            f.additions = a;
+            f.deletions = d;
+        }
+    }
+
     Ok(CommitDetails {
         hash: full_hash,
         short_hash,
@@ -78,7 +121,7 @@ pub fn commit_details(repo: &Path, hash: &str) -> Result<CommitDetails> {
         committer,
         message,
         parents,
-        files: changed_files(repo, hash)?,
+        files,
     })
 }
 
@@ -116,6 +159,8 @@ fn changed_files(repo: &Path, hash: &str) -> Result<Vec<FileChange>> {
             path,
             orig_path,
             kind,
+            additions: 0,
+            deletions: 0,
         });
     }
     Ok(files)
@@ -127,6 +172,7 @@ fn parse_record(record: &str) -> Option<CommitInfo> {
     }
     let mut fields = record.split(FIELD_SEP);
     Some(CommitInfo {
+        local_only: false, // filled in by log() from the upstream range
         hash: fields.next()?.to_string(),
         short_hash: fields.next()?.to_string(),
         author: fields.next()?.to_string(),
@@ -156,7 +202,7 @@ mod tests {
         repo.git(&["add", "a.txt"]);
         repo.commit("second commit");
 
-        let commits = log(repo.path(), 50, 0).unwrap();
+        let commits = log(repo.path(), 50, 0, false).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].subject, "second commit");
         assert_eq!(commits[1].subject, "initial commit");
@@ -175,7 +221,7 @@ mod tests {
             repo.git(&["add", "counter.txt"]);
             repo.commit(&format!("commit {i}"));
         }
-        let commits = log(repo.path(), 2, 1).unwrap();
+        let commits = log(repo.path(), 2, 1, false).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].subject, "commit 3");
         assert_eq!(commits[1].subject, "commit 2");
@@ -184,7 +230,7 @@ mod tests {
     #[test]
     fn empty_repo_yields_empty_log() {
         let repo = TestRepo::empty();
-        let commits = log(repo.path(), 50, 0).unwrap();
+        let commits = log(repo.path(), 50, 0, false).unwrap();
         assert!(commits.is_empty());
     }
 
@@ -252,7 +298,7 @@ mod tests {
     #[test]
     fn date_is_iso_8601() {
         let repo = TestRepo::with_initial_commit();
-        let commits = log(repo.path(), 1, 0).unwrap();
+        let commits = log(repo.path(), 1, 0, false).unwrap();
         // git's %aI normalizes a +00:00 offset to the Z suffix.
         assert_eq!(commits[0].date, "2026-01-02T03:04:05Z");
     }

@@ -4,15 +4,13 @@
   import DiffView from "$lib/DiffView.svelte";
   import Avatar from "$lib/Avatar.svelte";
   import {
-    gitCommitDetails,
-    watchRepo,
-    type CommitDetails,
     openRepo,
     gitStatus,
     gitLog,
     gitBranches,
     gitDiffFile,
     gitCommitDiff,
+    gitCommitDetails,
     gitStageFile,
     gitUnstageFile,
     gitStageAll,
@@ -25,46 +23,179 @@
     gitFetch,
     gitPull,
     gitPush,
+    gitTags,
+    gitCreateTag,
+    gitStashList,
+    gitStashAll,
+    gitAddIgnore,
+    gitRemoveIgnore,
+    gitUpdateMerge,
+    gitUpdateRebase,
+    gitPublishBranch,
+    gitRewordHead,
+    gitUndoLast,
+    gitRevert,
+    gitSwitchDetached,
+    gitUntrackedLines,
+    watchRepo,
     errorMessage,
     type RepoInfo,
     type Status,
     type CommitInfo,
+    type CommitDetails,
     type BranchInfo,
+    type TagInfo,
     type DiffMode,
-    type FileChange,
+    type ChangeKind,
   } from "$lib/git";
 
+  // ---------- state ----------
   let repo = $state<RepoInfo | null>(null);
   let status = $state<Status | null>(null);
   let commits = $state<CommitInfo[]>([]);
   let branches = $state<BranchInfo[]>([]);
-  let view = $state<"changes" | "history">("changes");
+  let tags = $state<TagInfo[]>([]);
+  let stashes = $state<string[]>([]);
+  let untrackedCounts = $state<Record<string, number>>({});
+
   let error = $state<string | null>(null);
+  let toast = $state<string | null>(null);
   let manualPath = $state("");
 
-  let diffText = $state("");
-  let diffTitle = $state("");
-  let selectedKey = $state<string | null>(null);
-
-  let commitSubject = $state("");
-  let commitBody = $state("");
-  let amend = $state(false);
-  let newBranchName = $state("");
-  let remoteBusy = $state<"fetch" | "pull" | "push" | null>(null);
-  let details = $state<CommitDetails | null>(null);
+  let railExpanded = $state(false);
+  let branchMenu = $state(false);
+  let syncMenu = $state(false);
+  let centerMode = $state<"history" | "releases">("history");
+  let scope = $state<"all" | "current">("current");
   let logExhausted = $state(false);
   let loadingMore = $state(false);
 
+  let rightView = $state<"working" | "detail">("working");
+  let selectedPath = $state<string | null>(null);
+  let diffText = $state("");
+  let selectedCommit = $state<CommitInfo | null>(null);
+  let details = $state<CommitDetails | null>(null);
+  let commitDiffText = $state("");
+  let editedMessage = $state<string | null>(null);
+
+  let summary = $state("");
+  let mainDismissed = $state(false);
+  let bannerBranchName = $state("");
+  let bannerNaming = $state(false);
+  let newBranchName = $state("");
+  let newBranchOpen = $state(false);
+  let ignoredSession = $state<string[]>([]);
+  let busy = $state<string | null>(null);
+
+  let diffModal = $state(false);
+  let diffModalTitle = $state("");
+  let diffModalText = $state("");
+
+  let releaseModal = $state(false);
+  let version = $state("0.1.0");
+  let relTitle = $state("");
+  let relNotes = $state("");
+  let pushTag = $state(true);
+
   const LOG_PAGE = 200;
   const RECENT_KEY = "trident.recentRepos";
-
   interface RecentRepo {
     path: string;
     name: string;
   }
-
   let recentRepos = $state<RecentRepo[]>(loadRecent());
 
+  // ---------- derived ----------
+  const PALETTE = ["#e2683c", "#2f8f5b", "#9b59b6", "#0f8f6b", "#d9534f", "#b8860b", "#5b3df5"];
+
+  let localBranches = $derived(branches.filter((b) => !b.isRemote));
+  let colorOf = $derived.by(() => {
+    const map = new Map<string, string>();
+    let i = 0;
+    for (const b of localBranches) {
+      map.set(b.name, b.name === "main" || b.name === "master" ? "#2f5fe0" : PALETTE[i++ % PALETTE.length]);
+    }
+    return (name: string) => map.get(name) ?? "#2f5fe0";
+  });
+  let currentColor = $derived(status ? colorOf(status.branch.head) : "#2f5fe0");
+  let remoteOnly = $derived(
+    branches.filter(
+      (b) =>
+        b.isRemote &&
+        !localBranches.some((l) => b.name === `origin/${l.name}` || b.name.endsWith(`/${l.name}`))
+    )
+  );
+  let branchTips = $derived.by(() => {
+    const map = new Map<string, { name: string; color: string }>();
+    // remotes first so local tips win when both point at the same commit
+    for (const b of branches.filter((x) => x.isRemote)) {
+      map.set(b.shortHash, { name: b.name, color: "#8f877b" });
+    }
+    for (const b of localBranches) {
+      map.set(b.shortHash, { name: b.name, color: colorOf(b.name) });
+    }
+    return map;
+  });
+
+  interface ChangeRow {
+    path: string;
+    kind: ChangeKind | "conflict";
+    checked: boolean;
+    untracked: boolean;
+    add: number;
+    del: number;
+  }
+  let changeRows = $derived.by<ChangeRow[]>(() => {
+    if (!status) return [];
+    const rows = new Map<string, ChangeRow>();
+    const row = (path: string): ChangeRow => {
+      if (!rows.has(path)) {
+        rows.set(path, { path, kind: "modified", checked: false, untracked: false, add: 0, del: 0 });
+      }
+      return rows.get(path)!;
+    };
+    for (const f of status.staged) {
+      const r = row(f.path);
+      r.kind = f.kind;
+      r.checked = true;
+      r.add += f.additions;
+      r.del += f.deletions;
+    }
+    for (const f of status.unstaged) {
+      const r = row(f.path);
+      if (!r.checked) r.kind = f.kind;
+      r.add += f.additions;
+      r.del += f.deletions;
+    }
+    for (const p of status.untracked) {
+      const r = row(p);
+      r.kind = "added";
+      r.untracked = true;
+      r.add = untrackedCounts[p] ?? 0;
+    }
+    for (const p of status.conflicted) {
+      row(p).kind = "conflict";
+    }
+    return [...rows.values()];
+  });
+  let checkedCount = $derived(changeRows.filter((r) => r.checked).length);
+  let allChecked = $derived(changeRows.length > 0 && checkedCount === changeRows.length);
+  let someChecked = $derived(checkedCount > 0 && !allChecked);
+  let canCommit = $derived(summary.trim().length > 0 && checkedCount > 0);
+  let onMain = $derived(
+    !!status &&
+      (status.branch.head === "main" || status.branch.head === "master") &&
+      changeRows.length > 0 &&
+      !mainDismissed
+  );
+  let selectedRow = $derived(changeRows.find((r) => r.path === selectedPath) ?? null);
+  let latestTag = $derived(tags.length > 0 ? tags[0] : null);
+  let selectedIsHead = $derived(
+    !!selectedCommit && !!status && status.branch.oid !== "" && selectedCommit.hash.startsWith(status.branch.oid)
+  );
+  let selectedEditable = $derived(!!selectedCommit && selectedCommit.localOnly && selectedIsHead);
+
+  // ---------- helpers ----------
   function loadRecent(): RecentRepo[] {
     try {
       return JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
@@ -72,7 +203,6 @@
       return [];
     }
   }
-
   function rememberRepo(info: RepoInfo) {
     recentRepos = [
       { path: info.path, name: info.name },
@@ -81,8 +211,128 @@
     localStorage.setItem(RECENT_KEY, JSON.stringify(recentRepos));
   }
 
-  // Auto-refresh: the backend watcher emits repo-changed on any relevant
-  // disk change; debounce bursts (checkouts touch hundreds of files).
+  function relTime(iso: string): string {
+    const s = (Date.now() - new Date(iso).getTime()) / 1000;
+    if (s < 90) return "just now";
+    if (s < 3600) return `${Math.round(s / 60)}m ago`;
+    if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+    if (s < 604800) return `${Math.round(s / 86400)}d ago`;
+    return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  function badgeOf(kind: ChangeRow["kind"]): string {
+    return (
+      { modified: "M", added: "A", deleted: "D", renamed: "R", copied: "C", typechange: "T", conflict: "!" }[kind] ??
+      "M"
+    );
+  }
+
+  function showToast(text: string) {
+    toast = text;
+    setTimeout(() => {
+      if (toast === text) toast = null;
+    }, 3200);
+  }
+
+  // ---------- data flow ----------
+  async function openFromDialog() {
+    const picked = await openDialog({ directory: true, title: "Open repository" });
+    if (typeof picked === "string") await openPath(picked);
+  }
+
+  async function openPath(path: string) {
+    error = null;
+    try {
+      repo = await openRepo(path);
+      rememberRepo(repo);
+      rightView = "working";
+      selectedPath = null;
+      selectedCommit = null;
+      commits = [];
+      logExhausted = false;
+      mainDismissed = false;
+      ignoredSession = [];
+      await refresh();
+      await watchRepo(repo.path);
+    } catch (e) {
+      error = errorMessage(e);
+    }
+  }
+
+  async function refresh() {
+    if (!repo) return;
+    try {
+      const limit = Math.max(commits.length, LOG_PAGE);
+      const [s, c, b, t, st] = await Promise.all([
+        gitStatus(repo.path),
+        gitLog(repo.path, limit, 0, scope === "all"),
+        gitBranches(repo.path),
+        gitTags(repo.path),
+        gitStashList(repo.path),
+      ]);
+      status = s;
+      commits = c;
+      branches = b;
+      tags = t;
+      stashes = st;
+      const counts: Record<string, number> = {};
+      await Promise.all(
+        s.untracked.slice(0, 100).map(async (p) => {
+          counts[p] = await gitUntrackedLines(repo!.path, p);
+        })
+      );
+      untrackedCounts = counts;
+      await resyncDiff();
+    } catch (e) {
+      error = errorMessage(e);
+    }
+  }
+
+  async function resyncDiff() {
+    if (!repo || !status) return;
+    // keep a valid file selected in the working view
+    if (rightView === "working") {
+      if (!selectedPath || !changeRows.some((r) => r.path === selectedPath)) {
+        selectedPath = changeRows[0]?.path ?? null;
+      }
+      if (selectedPath) {
+        await loadDiff(selectedPath);
+      } else {
+        diffText = "";
+      }
+    }
+  }
+
+  async function loadDiff(path: string) {
+    if (!repo) return;
+    const row = changeRows.find((r) => r.path === path);
+    if (!row) return;
+    const mode: DiffMode = row.untracked
+      ? "untracked"
+      : status!.unstaged.some((f) => f.path === path)
+        ? "worktree"
+        : "staged";
+    try {
+      diffText = await gitDiffFile(repo.path, path, mode);
+    } catch (e) {
+      diffText = "";
+      error = errorMessage(e);
+    }
+  }
+
+  async function act(fn: () => Promise<unknown>, okToast?: string) {
+    if (!repo) return;
+    error = null;
+    try {
+      await fn();
+      if (okToast) showToast(okToast);
+    } catch (e) {
+      error = errorMessage(e);
+    }
+    await refresh();
+  }
+
+  // auto-refresh from the fs watcher, debounced
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     const unlisten = listen("repo-changed", () => {
@@ -95,85 +345,219 @@
     };
   });
 
-  let localBranches = $derived(branches.filter((b) => !b.isRemote));
-  let remoteBranches = $derived(branches.filter((b) => b.isRemote));
-  let changeCount = $derived(
-    status
-      ? status.staged.length +
-        status.unstaged.length +
-        status.untracked.length +
-        status.conflicted.length
-      : 0
-  );
-  let canCommit = $derived(
-    commitSubject.trim().length > 0 && status !== null && (status.staged.length > 0 || amend)
-  );
-
-  async function openFromDialog() {
-    const picked = await openDialog({ directory: true, title: "Open repository" });
-    if (typeof picked === "string") await openPath(picked);
+  // ---------- changes ----------
+  function selectRow(path: string) {
+    selectedPath = path;
+    loadDiff(path);
   }
 
-  async function openPath(path: string) {
-    error = null;
-    try {
-      repo = await openRepo(path);
-      rememberRepo(repo);
-      clearDiff();
-      logExhausted = false;
-      commits = [];
-      await refresh();
-      await watchRepo(repo.path);
-    } catch (e) {
-      error = errorMessage(e);
+  async function toggleRow(row: ChangeRow) {
+    await act(() =>
+      row.checked ? gitUnstageFile(repo!.path, row.path) : gitStageFile(repo!.path, row.path)
+    );
+  }
+
+  async function toggleAll() {
+    await act(() => (allChecked ? gitUnstageAll(repo!.path) : gitStageAll(repo!.path)));
+  }
+
+  async function ignoreRow(path: string) {
+    await act(() => gitAddIgnore(repo!.path, path), `${path} added to .gitignore`);
+    if (!error) ignoredSession = [...ignoredSession, path];
+  }
+
+  async function undoIgnore(path: string) {
+    await act(() => gitRemoveIgnore(repo!.path, path));
+    ignoredSession = ignoredSession.filter((p) => p !== path);
+  }
+
+  async function discardRow(row: ChangeRow) {
+    const verb = row.untracked ? "Delete untracked file" : "Discard changes to";
+    const ok = await confirmDialog(`${verb} "${row.path}"? This cannot be undone.`, {
+      title: "Trident",
+      kind: "warning",
+    });
+    if (!ok) return;
+    await act(() => gitDiscardFile(repo!.path, row.path, row.untracked));
+  }
+
+  async function stashAll() {
+    await act(() => gitStashAll(repo!.path, summary.trim()), "Changes stashed safely");
+  }
+
+  async function doCommit() {
+    if (!canCommit) return;
+    await act(() => gitCommit(repo!.path, summary.trim(), false), "Committed");
+    if (!error) {
+      summary = "";
+      mainDismissed = false;
     }
   }
 
-  function clearDiff() {
-    selectedKey = null;
-    diffText = "";
-    diffTitle = "";
-    details = null;
+  async function branchFromBanner() {
+    const name = bannerBranchName.trim();
+    if (!name) return;
+    await act(() => gitCreateBranch(repo!.path, name, true), `Now on ${name} - changes came along`);
+    bannerNaming = false;
+    bannerBranchName = "";
   }
 
-  async function refresh() {
+  // ---------- branches ----------
+  async function switchTo(b: BranchInfo) {
+    if (b.isHead) return;
+    branchMenu = false;
+    await act(() => gitSwitchBranch(repo!.path, b.name));
+    rightView = "working";
+    mainDismissed = false;
+  }
+
+  async function checkoutRemote(b: BranchInfo) {
+    const short = b.name.replace(/^[^/]+\//, "");
+    await act(() => gitSwitchBranch(repo!.path, short), `Checked out ${short}`);
+  }
+
+  async function publish(b: BranchInfo) {
+    await act(() => gitPublishBranch(repo!.path, b.name), `${b.name} published to origin`);
+  }
+
+  async function createBranch() {
+    const name = newBranchName.trim();
+    if (!name) return;
+    await act(() => gitCreateBranch(repo!.path, name, true), `Created ${name}`);
+    if (!error) {
+      newBranchName = "";
+      newBranchOpen = false;
+      branchMenu = false;
+    }
+  }
+
+  async function deleteBranchUI(b: BranchInfo) {
+    const ok = await confirmDialog(`Delete branch "${b.name}"?`, { title: "Trident", kind: "warning" });
+    if (!ok || !repo) return;
+    try {
+      await gitDeleteBranch(repo.path, b.name, false);
+    } catch (e) {
+      const message = errorMessage(e);
+      if (message.includes("not fully merged")) {
+        const force = await confirmDialog(
+          `"${b.name}" has commits that exist nowhere else. Delete anyway and lose them?`,
+          { title: "Trident", kind: "warning" }
+        );
+        if (force) await act(() => gitDeleteBranch(repo!.path, b.name, true));
+      } else {
+        error = message;
+      }
+    }
+    await refresh();
+  }
+
+  // ---------- sync ----------
+  async function run(label: string, fn: () => Promise<unknown>, okToast: string) {
+    if (!repo || busy) return;
+    busy = label;
+    syncMenu = false;
+    await act(fn, okToast);
+    busy = null;
+  }
+
+  async function doSync() {
+    if (!repo || busy || !status) return;
+    busy = "sync";
+    error = null;
+    try {
+      await gitFetch(repo.path);
+      const s = await gitStatus(repo.path);
+      if (s.branch.behind > 0 && s.branch.ahead > 0) {
+        syncMenu = true; // diverged: the user picks rebase or merge
+      } else if (s.branch.behind > 0) {
+        await gitPull(repo.path);
+        showToast(`Pulled ${s.branch.behind} new commit${s.branch.behind === 1 ? "" : "s"}`);
+      } else if (s.branch.ahead > 0) {
+        await gitPush(repo.path);
+        showToast(`Pushed ${s.branch.ahead} commit${s.branch.ahead === 1 ? "" : "s"}`);
+      } else {
+        showToast("Up to date");
+      }
+    } catch (e) {
+      error = errorMessage(e);
+    }
+    busy = null;
+    await refresh();
+  }
+
+  // ---------- history ----------
+  async function selectCommit(c: CommitInfo) {
     if (!repo) return;
-    error = null;
+    selectedCommit = c;
+    rightView = "detail";
+    editedMessage = null;
+    details = null;
+    commitDiffText = "";
     try {
-      // Reload at least as much history as is already on screen so
-      // "load more" progress survives an auto-refresh.
-      const limit = Math.max(commits.length, LOG_PAGE);
-      [status, commits, branches] = await Promise.all([
-        gitStatus(repo.path),
-        gitLog(repo.path, limit),
-        gitBranches(repo.path),
+      [details, commitDiffText] = await Promise.all([
+        gitCommitDetails(repo.path, c.hash),
+        gitCommitDiff(repo.path, c.hash),
       ]);
-      await resyncDiff();
     } catch (e) {
       error = errorMessage(e);
     }
   }
 
-  /** After a refresh, bring the open diff up to date with the new state. */
-  async function resyncDiff() {
-    if (!repo || !selectedKey) return;
-    const colon = selectedKey.indexOf(":");
-    if (colon === -1) return; // a commit diff; commits are immutable
-    const mode = selectedKey.slice(0, colon) as DiffMode;
-    const path = selectedKey.slice(colon + 1);
-    try {
-      diffText = await gitDiffFile(repo.path, path, mode);
-    } catch {
-      // The file left this state (staged, committed, discarded): close it.
-      clearDiff();
+  function backToWorking() {
+    rightView = "working";
+    selectedCommit = null;
+    details = null;
+    resyncDiff();
+  }
+
+  async function saveMessage() {
+    if (!repo || editedMessage === null || !editedMessage.trim()) return;
+    await act(() => gitRewordHead(repo!.path, editedMessage!), "Message rewritten");
+    if (!error && commits.length > 0) {
+      selectCommit(commits[0]);
     }
+  }
+
+  async function undoLast(keep: boolean) {
+    if (!keep) {
+      const ok = await confirmDialog(
+        "Undo this commit and delete its changes from disk? This cannot be recovered.",
+        { title: "Trident", kind: "warning" }
+      );
+      if (!ok) return;
+    }
+    await act(() => gitUndoLast(repo!.path, keep), keep ? "Commit undone - changes kept" : "Commit undone");
+    backToWorking();
+  }
+
+  async function revertSelected() {
+    if (!selectedCommit) return;
+    await act(() => gitRevert(repo!.path, selectedCommit!.hash), "Revert commit created");
+    backToWorking();
+  }
+
+  async function checkoutHere() {
+    if (!selectedCommit) return;
+    const ok = await confirmDialog(
+      `Check out ${selectedCommit.shortHash} directly? You'll be "detached": looking at an old snapshot without being on a branch. Switch to any branch to get back.`,
+      { title: "Trident" }
+    );
+    if (!ok) return;
+    await act(() => gitSwitchDetached(repo!.path, selectedCommit!.hash));
+    backToWorking();
+  }
+
+  async function setScope(next: "all" | "current") {
+    scope = next;
+    logExhausted = false;
+    await refresh();
   }
 
   async function loadMore() {
     if (!repo || loadingMore) return;
     loadingMore = true;
     try {
-      const older = await gitLog(repo.path, LOG_PAGE, commits.length);
+      const older = await gitLog(repo.path, LOG_PAGE, commits.length, scope === "all");
       commits = [...commits, ...older];
       if (older.length < LOG_PAGE) logExhausted = true;
     } catch (e) {
@@ -182,157 +566,77 @@
     loadingMore = false;
   }
 
-  /** Run a mutating action, surface its error, refresh the panes. */
-  async function act(fn: () => Promise<unknown>) {
-    if (!repo) return;
-    error = null;
-    try {
-      await fn();
-    } catch (e) {
-      error = errorMessage(e);
+  // ---------- releases ----------
+  function bumped(kind: "patch" | "minor" | "major"): string {
+    const p = version.split(".").map((n) => parseInt(n) || 0);
+    let [a, b, c] = [p[0] || 0, p[1] || 0, p[2] || 0];
+    if (kind === "patch") c += 1;
+    else if (kind === "minor") {
+      b += 1;
+      c = 0;
+    } else {
+      a += 1;
+      b = 0;
+      c = 0;
     }
-    await refresh();
+    return `${a}.${b}.${c}`;
   }
 
-  async function selectFile(path: string, mode: DiffMode) {
-    if (!repo) return;
-    selectedKey = `${mode}:${path}`;
-    diffTitle = path;
-    try {
-      diffText = await gitDiffFile(repo.path, path, mode);
-    } catch (e) {
-      diffText = "";
-      error = errorMessage(e);
+  function openReleaseModal() {
+    version = latestTag ? bumpFrom(latestTag.name) : "0.1.0";
+    relTitle = "";
+    relNotes = "";
+    releaseModal = true;
+  }
+  function bumpFrom(tag: string): string {
+    const clean = tag.replace(/^v/, "");
+    const p = clean.split(".").map((n) => parseInt(n) || 0);
+    return `${p[0] || 0}.${(p[1] || 0) + 1}.0`;
+  }
+
+  function generateNotes() {
+    let since = commits;
+    if (latestTag) {
+      const idx = commits.findIndex((c) => c.hash.startsWith(latestTag!.hash));
+      if (idx > 0) since = commits.slice(0, idx);
     }
+    relNotes = since
+      .slice(0, 20)
+      .map((c) => `- ${c.subject}`)
+      .join("\n");
   }
 
-  async function selectCommit(commit: CommitInfo) {
-    if (!repo) return;
-    selectedKey = commit.hash;
-    diffTitle = `${commit.shortHash} ${commit.subject}`;
-    details = null;
-    try {
-      [diffText, details] = await Promise.all([
-        gitCommitDiff(repo.path, commit.hash),
-        gitCommitDetails(repo.path, commit.hash),
-      ]);
-    } catch (e) {
-      diffText = "";
-      error = errorMessage(e);
-    }
-  }
-
-  async function stageFile(path: string) {
-    await act(() => gitStageFile(repo!.path, path));
-    clearDiff();
-  }
-
-  async function unstageFile(path: string) {
-    await act(() => gitUnstageFile(repo!.path, path));
-    clearDiff();
-  }
-
-  async function discardFile(path: string, untracked: boolean) {
-    const verb = untracked ? "Delete untracked file" : "Discard changes to";
-    const ok = await confirmDialog(`${verb} "${path}"? This cannot be undone.`, {
-      title: "Trident",
-      kind: "warning",
-    });
-    if (!ok) return;
-    await act(() => gitDiscardFile(repo!.path, path, untracked));
-    clearDiff();
-  }
-
-  async function doCommit() {
-    if (!canCommit) return;
-    const body = commitBody.trim();
-    const message = body ? `${commitSubject.trim()}\n\n${body}` : commitSubject.trim();
-    await act(() => gitCommit(repo!.path, message, amend));
+  async function createRelease() {
+    const name = `v${version.trim()}`;
+    const message = relTitle.trim()
+      ? `${relTitle.trim()}\n\n${relNotes.trim()}`.trim()
+      : relNotes.trim();
+    await act(
+      () => gitCreateTag(repo!.path, name, message, pushTag),
+      `${name} created${pushTag ? " and pushed" : ""}`
+    );
     if (!error) {
-      commitSubject = "";
-      commitBody = "";
-      amend = false;
-      clearDiff();
+      releaseModal = false;
+      centerMode = "releases";
     }
   }
 
-  async function switchTo(branch: BranchInfo) {
-    if (branch.isHead || branch.isRemote) return;
-    await act(() => gitSwitchBranch(repo!.path, branch.name));
-    clearDiff();
-  }
-
-  async function createBranch() {
-    const name = newBranchName.trim();
-    if (!name) return;
-    await act(() => gitCreateBranch(repo!.path, name, true));
-    if (!error) newBranchName = "";
-  }
-
-  async function deleteBranch(branch: BranchInfo) {
-    const ok = await confirmDialog(`Delete branch "${branch.name}"?`, {
-      title: "Trident",
-      kind: "warning",
-    });
-    if (!ok || !repo) return;
-    try {
-      await gitDeleteBranch(repo.path, branch.name, false);
-    } catch (e) {
-      const message = errorMessage(e);
-      if (message.includes("not fully merged")) {
-        const force = await confirmDialog(
-          `"${branch.name}" has commits that are not merged anywhere else. Delete anyway and lose them?`,
-          { title: "Trident", kind: "warning" }
-        );
-        if (force) {
-          await act(() => gitDeleteBranch(repo!.path, branch.name, true));
-          return;
-        }
-      } else {
-        error = message;
-      }
-    }
-    await refresh();
-  }
-
-  async function remoteOp(kind: "fetch" | "pull" | "push") {
-    if (!repo || remoteBusy) return;
-    remoteBusy = kind;
-    const ops = { fetch: gitFetch, pull: gitPull, push: gitPush };
-    await act(() => ops[kind](repo!.path));
-    remoteBusy = null;
-  }
-
-  function kindBadge(change: FileChange): string {
-    return { modified: "M", added: "A", deleted: "D", renamed: "R", copied: "C", typechange: "T" }[
-      change.kind
-    ];
-  }
-
-  function commitDate(iso: string): string {
-    return new Date(iso).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  }
-
-  function fullDate(iso: string): string {
-    return new Date(iso).toLocaleString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+  function openDiffModal(title: string, text: string) {
+    diffModalTitle = title;
+    diffModalText = text;
+    diffModal = true;
   }
 </script>
 
+<!-- ==================== WELCOME ==================== -->
 {#if repo === null}
   <main class="welcome">
+    <div class="welcome-logo">
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="9" r="2.4" /><path d="M6 8.4v7.2M8.2 6.6c6 0 7.6 1 7.6 4.2" /></svg>
+    </div>
     <h1>Trident</h1>
-    <p>A fast, friendly git client. Open a repository to get started.</p>
-    <button class="primary" onclick={openFromDialog}>Open repository…</button>
+    <p>Version control that explains itself.</p>
+    <button class="btn-accent big" onclick={openFromDialog}>Open repository…</button>
     <form
       class="manual"
       onsubmit={(e) => {
@@ -341,911 +645,2170 @@
       }}
     >
       <input placeholder="…or paste a repo path" bind:value={manualPath} />
-      <button type="submit">Open</button>
+      <button type="submit" class="btn">Open</button>
     </form>
     {#if recentRepos.length > 0}
       <div class="recent">
-        <div class="group-title">Recent</div>
-        {#each recentRepos as recent (recent.path)}
-          <button class="recent-row" onclick={() => openPath(recent.path)}>
-            <span class="recent-name">{recent.name}</span>
-            <span class="recent-path" title={recent.path}>{recent.path}</span>
+        <div class="mono label">RECENT</div>
+        {#each recentRepos as r (r.path)}
+          <button class="recent-row" onclick={() => openPath(r.path)}>
+            <span class="recent-name">{r.name}</span>
+            <span class="recent-path mono">{r.path}</span>
           </button>
         {/each}
       </div>
     {/if}
-    {#if error}<div class="error">{error}</div>{/if}
+    {#if error}<div class="error-text">{error}</div>{/if}
   </main>
 {:else}
+  <!-- ==================== WORKSPACE ==================== -->
   <main class="app">
+    <!-- toolbar -->
     <header class="toolbar">
-      <button onclick={openFromDialog} title="Open another repository">Open…</button>
-      <span class="repo-name">{repo.name}</span>
-      {#if status}
-        <span class="branch-chip" title="Current branch">
-          {status.branch.head}
-          {#if status.branch.ahead > 0}<span class="ahead">↑{status.branch.ahead}</span>{/if}
-          {#if status.branch.behind > 0}<span class="behind">↓{status.branch.behind}</span>{/if}
-        </span>
-        {#if status.branch.upstream}
-          <span class="upstream" title="Upstream">⇄ {status.branch.upstream}</span>
+      <button class="back mono" onclick={() => (repo = null)}>← projects</button>
+      <div class="repo-badge">
+        <div class="repo-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="9" r="2.4" /><path d="M6 8.4v7.2M8.2 6.6c6 0 7.6 1 7.6 4.2" /></svg>
+        </div>
+        <div>
+          <div class="repo-name">{repo.name}</div>
+          <div class="repo-path mono">{repo.path}</div>
+        </div>
+      </div>
+
+      <!-- branch switcher -->
+      <div class="dropdown-anchor">
+        <button class="branch-btn" onclick={() => (branchMenu = !branchMenu)}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={currentColor} stroke-width="2.2" stroke-linecap="round"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="8" r="2.4" /><path d="M6 8.4v7.2M8.2 6.4c7 0 7.8 1.6 7.8 4" /></svg>
+          <span class="branch-name">{status?.branch.head ?? repo.head}</span>
+          {#if status?.branch.upstream}
+            <span class="pill clean mono">published</span>
+          {:else if branches.some((b) => b.isRemote)}
+            <span class="pill muted mono">local</span>
+          {/if}
+          {#if status && (status.branch.ahead > 0 || status.branch.behind > 0)}
+            <span class="mono updown">
+              {#if status.branch.ahead > 0}↑{status.branch.ahead}{/if}
+              {#if status.branch.behind > 0}↓{status.branch.behind}{/if}
+            </span>
+          {/if}
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2.6" stroke-linecap="round"><path d="M6 9l6 6 6-6" /></svg>
+        </button>
+        {#if branchMenu}
+          <button class="scrim" onclick={() => (branchMenu = false)} aria-label="close"></button>
+          <div class="menu">
+            <div class="menu-label mono">SWITCH BRANCH</div>
+            {#each localBranches as b (b.name)}
+              <button class="menu-row" onclick={() => switchTo(b)}>
+                <span class="dot" style="background:{colorOf(b.name)}"></span>
+                <span class="menu-row-name">{b.name}</span>
+                {#if b.isHead}<span class="mono tiny accent">current</span>{/if}
+                {#if !b.upstream}<span class="mono tiny muted-text">local</span>{/if}
+              </button>
+            {/each}
+            <div class="menu-sep"></div>
+            {#if newBranchOpen}
+              <form
+                class="new-branch-form"
+                onsubmit={(e) => {
+                  e.preventDefault();
+                  createBranch();
+                }}
+              >
+                <input class="mono" placeholder="branch-name" bind:value={newBranchName} />
+                <button type="submit" class="btn-accent small">Create</button>
+              </form>
+            {:else}
+              <button class="menu-row accent-text" onclick={() => (newBranchOpen = true)}>+ New branch from here</button>
+            {/if}
+          </div>
         {/if}
-      {/if}
+      </div>
+
       <span class="spacer"></span>
-      <button onclick={() => remoteOp("fetch")} disabled={remoteBusy !== null}>
-        {remoteBusy === "fetch" ? "Fetching…" : "Fetch"}
+
+      <button class="btn" onclick={openReleaseModal}>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4l-7.2 7.2a2 2 0 01-2.8 0l-7-7a2 2 0 01-.6-1.4V4a1 1 0 011-1h8.2a2 2 0 011.4.6l7 7a2 2 0 010 2.8z" /><circle cx="7.5" cy="7.5" r="1.3" fill="currentColor" /></svg>
+        Release
       </button>
-      <button onclick={() => remoteOp("pull")} disabled={remoteBusy !== null}>
-        {remoteBusy === "pull" ? "Pulling…" : "Pull"}
-      </button>
-      <button onclick={() => remoteOp("push")} disabled={remoteBusy !== null}>
-        {remoteBusy === "push"
-          ? "Pushing…"
-          : status && status.branch.ahead > 0
-            ? `Push (${status.branch.ahead})`
-            : "Push"}
-      </button>
-      <button onclick={refresh} title="Refresh">⟳</button>
+      <div class="dropdown-anchor sync-split">
+        <button class="btn-accent sync-main" onclick={doSync} disabled={busy !== null}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 01-9 9 9 9 0 01-6.7-3M3 12a9 9 0 019-9 9 9 0 016.7 3M3 4v5h5M21 20v-5h-5" /></svg>
+          {busy ? "Working…" : "Sync"}
+        </button>
+        <button class="btn-accent sync-caret" onclick={() => (syncMenu = !syncMenu)} disabled={busy !== null} aria-label="sync options">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round"><path d="M6 9l6 6 6-6" /></svg>
+        </button>
+        {#if syncMenu}
+          <button class="scrim" onclick={() => (syncMenu = false)} aria-label="close"></button>
+          <div class="menu wide right">
+            <button class="menu-card" onclick={() => run("rebase", () => gitUpdateRebase(repo!.path), "Updated with rebase")}>
+              <span class="menu-card-icon">↻</span>
+              <span class="menu-card-body">
+                <span class="menu-card-title">Update with rebase <span class="pill clean mono tiny-pill">TIDY</span></span>
+                <span class="menu-card-sub mono">Replays your commits on top of the latest upstream. No extra merge commit, straight-line history.</span>
+              </span>
+            </button>
+            <button class="menu-card" onclick={() => run("merge", () => gitUpdateMerge(repo!.path), "Updated with merge")}>
+              <span class="menu-card-icon">⇄</span>
+              <span class="menu-card-body">
+                <span class="menu-card-title">Update with merge</span>
+                <span class="menu-card-sub mono">Combines upstream into your branch, adding one merge commit. Safe and simple.</span>
+              </span>
+            </button>
+            <div class="menu-sep"></div>
+            <button class="menu-row" onclick={() => run("fetch", () => gitFetch(repo!.path), "Fetched")}>
+              <span class="mr-icon">↓</span> Fetch only <span class="mono tiny muted-text pushed-right">check, don't apply</span>
+            </button>
+            <button class="menu-row" onclick={() => run("push", () => gitPush(repo!.path), "Pushed")}>
+              <span class="mr-icon">↑</span> Push only <span class="mono tiny muted-text pushed-right">send yours up</span>
+            </button>
+          </div>
+        {/if}
+      </div>
     </header>
 
-    {#if error}<div class="error banner">{error}</div>{/if}
+    {#if error}
+      <div class="banner error-banner">
+        {error}
+        <button class="banner-close" onclick={() => (error = null)}>×</button>
+      </div>
+    {/if}
+    {#if toast}
+      <div class="banner toast-banner">{toast}</div>
+    {/if}
 
-    <div class="columns">
-      <nav class="sidebar">
-        <div class="group-title">Branches</div>
-        {#each localBranches as branch (branch.name)}
-          <div class="row" class:head={branch.isHead}>
-            <button
-              class="row-main"
-              disabled={branch.isHead}
-              title={branch.isHead ? branch.name : `Switch to ${branch.name}`}
-              onclick={() => switchTo(branch)}
-            >
-              <span class="row-label">{branch.isHead ? "● " : ""}{branch.name}</span>
-              {#if branch.ahead > 0 || branch.behind > 0}
-                <span class="track">
-                  {#if branch.ahead > 0}↑{branch.ahead}{/if}
-                  {#if branch.behind > 0}↓{branch.behind}{/if}
-                </span>
-              {/if}
-            </button>
-            {#if !branch.isHead}
-              <span class="row-actions">
-                <button class="mini danger" title="Delete branch" onclick={() => deleteBranch(branch)}>
-                  ×
-                </button>
-              </span>
-            {/if}
-          </div>
-        {/each}
-        <form
-          class="new-branch"
-          onsubmit={(e) => {
-            e.preventDefault();
-            createBranch();
-          }}
-        >
-          <input placeholder="new branch…" bind:value={newBranchName} />
-          <button type="submit" class="mini" disabled={!newBranchName.trim()}>+</button>
-        </form>
-        {#if remoteBranches.length > 0}
-          <div class="group-title">Remotes</div>
-          {#each remoteBranches as branch (branch.name)}
-            <div class="row remote">
-              <span class="row-label static-label" title={branch.name}>{branch.name}</span>
+    <!-- three panes -->
+    <div class="panes">
+      <!-- LEFT: branch rail -->
+      <nav
+        class="rail"
+        class:expanded={railExpanded}
+        onmouseenter={() => (railExpanded = true)}
+        onmouseleave={() => (railExpanded = false)}
+      >
+        {#if !railExpanded}
+          <div class="rail-collapsed">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2.1" stroke-linecap="round"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="8" r="2.4" /><path d="M6 8.4v7.2M8.2 6.4c7 0 7.8 1.6 7.8 4" /></svg>
+            <div class="rail-dots">
+              {#each localBranches as b (b.name)}
+                <button
+                  class="rail-dot"
+                  title={b.name}
+                  style="background:{colorOf(b.name)};box-shadow:{b.isHead ? '0 0 0 3px var(--accent-soft)' : 'none'}"
+                  onclick={() => switchTo(b)}
+                  aria-label={b.name}
+                ></button>
+              {/each}
             </div>
-          {/each}
-        {/if}
-      </nav>
-
-      <section class="list-pane">
-        <div class="tabs">
-          <button class:active={view === "changes"} onclick={() => (view = "changes")}>
-            Changes {#if changeCount > 0}<span class="count">{changeCount}</span>{/if}
-          </button>
-          <button class:active={view === "history"} onclick={() => (view = "history")}>
-            History
-          </button>
-        </div>
-
-        {#if view === "changes"}
-          <div class="scroll">
-            {#if status}
-              {#if status.conflicted.length > 0}
-                <div class="group-title conflict">
-                  Conflicts <span class="count">{status.conflicted.length}</span>
-                </div>
-                {#each status.conflicted as path (path)}
-                  <div class="row" class:selected={selectedKey === `worktree:${path}`}>
-                    <button class="row-main" onclick={() => selectFile(path, "worktree")}>
-                      <span class="badge conflictbadge">!</span>
-                      <span class="row-label">{path}</span>
-                    </button>
-                  </div>
-                {/each}
-              {/if}
-
-              {#if status.staged.length > 0}
-                <div class="group-title">
-                  Staged <span class="count">{status.staged.length}</span>
-                  <button class="mini link" onclick={() => act(() => gitUnstageAll(repo!.path)).then(clearDiff)}>
-                    unstage all
-                  </button>
-                </div>
-                {#each status.staged as file ("staged:" + file.path)}
-                  <div class="row" class:selected={selectedKey === `staged:${file.path}`}>
-                    <button class="row-main" onclick={() => selectFile(file.path, "staged")}>
-                      <span class="badge {file.kind}">{kindBadge(file)}</span>
-                      <span class="row-label" title={file.path}>
-                        {#if file.origPath}{file.origPath} → {/if}{file.path}
-                      </span>
-                    </button>
-                    <span class="row-actions">
-                      <button class="mini" title="Unstage" onclick={() => unstageFile(file.path)}>
-                        −
-                      </button>
-                    </span>
-                  </div>
-                {/each}
-              {/if}
-
-              {#if status.unstaged.length > 0}
-                <div class="group-title">
-                  Unstaged <span class="count">{status.unstaged.length}</span>
-                </div>
-                {#each status.unstaged as file ("worktree:" + file.path)}
-                  <div class="row" class:selected={selectedKey === `worktree:${file.path}`}>
-                    <button class="row-main" onclick={() => selectFile(file.path, "worktree")}>
-                      <span class="badge {file.kind}">{kindBadge(file)}</span>
-                      <span class="row-label" title={file.path}>
-                        {#if file.origPath}{file.origPath} → {/if}{file.path}
-                      </span>
-                    </button>
-                    <span class="row-actions">
-                      <button class="mini" title="Stage" onclick={() => stageFile(file.path)}>+</button>
-                      <button
-                        class="mini danger"
-                        title="Discard changes"
-                        onclick={() => discardFile(file.path, false)}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  </div>
-                {/each}
-              {/if}
-
-              {#if status.untracked.length > 0}
-                <div class="group-title">
-                  Untracked <span class="count">{status.untracked.length}</span>
-                  <button class="mini link" onclick={() => act(() => gitStageAll(repo!.path)).then(clearDiff)}>
-                    stage all
-                  </button>
-                </div>
-                {#each status.untracked as path (path)}
-                  <div class="row" class:selected={selectedKey === `untracked:${path}`}>
-                    <button class="row-main" onclick={() => selectFile(path, "untracked")}>
-                      <span class="badge added">?</span>
-                      <span class="row-label" title={path}>{path}</span>
-                    </button>
-                    <span class="row-actions">
-                      <button class="mini" title="Stage" onclick={() => stageFile(path)}>+</button>
-                      <button
-                        class="mini danger"
-                        title="Delete file"
-                        onclick={() => discardFile(path, true)}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  </div>
-                {/each}
-              {/if}
-
-              {#if changeCount === 0}
-                <div class="empty-note">Working tree clean</div>
-              {/if}
-            {/if}
+            <div class="rail-vertical mono">BRANCHES ›</div>
           </div>
-
-          <div class="commit-box">
-            <div class="subject-wrap">
-              <input
-                class="subject"
-                placeholder="Commit subject"
-                bind:value={commitSubject}
-                onkeydown={(e) => {
-                  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") doCommit();
-                }}
-              />
-              <span
-                class="subject-count"
-                class:over={commitSubject.length > 72}
-                title="Subject length; 50 is conventional, 72 the hard ceiling"
-              >
-                {commitSubject.length || ""}
-              </span>
+        {:else}
+          <div class="rail-expanded">
+            <div class="rail-head">
+              <span class="mono label">BRANCHES</span>
+              <button class="plus-btn" title="New branch" onclick={() => { branchMenu = true; newBranchOpen = true; }}>+</button>
             </div>
-            <textarea
-              placeholder="Body (optional)"
-              bind:value={commitBody}
-              rows="3"
-              onkeydown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") doCommit();
-              }}
-            ></textarea>
-            <div class="commit-actions">
-              <label class="amend">
-                <input type="checkbox" bind:checked={amend} />
-                Amend
-              </label>
-              <button class="primary" disabled={!canCommit} onclick={doCommit}>
-                Commit{status && status.staged.length > 0 ? ` (${status.staged.length})` : ""}
+            <div class="rail-scroll">
+              <div class="mono section-label">◉ LOCAL · ON THIS MACHINE</div>
+              {#each localBranches as b (b.name)}
+                <div class="rail-row" class:current={b.isHead}>
+                  <button class="rail-row-main" onclick={() => switchTo(b)}>
+                    <span class="dot" style="background:{colorOf(b.name)}"></span>
+                    <span class="rail-row-name">{b.name}</span>
+                  </button>
+                  {#if b.upstream && b.ahead > 0}
+                    <span class="mono tiny clean-text" title="{b.ahead} commit(s) ready to push">↑{b.ahead}</span>
+                  {:else if !b.upstream && branches.some((x) => x.isRemote)}
+                    <button class="pill-btn mono" onclick={() => publish(b)}>Publish</button>
+                  {/if}
+                  {#if !b.isHead}
+                    <button class="x-btn" title="Delete branch" onclick={() => deleteBranchUI(b)}>×</button>
+                  {/if}
+                </div>
+              {/each}
+              {#if remoteOnly.length > 0}
+                <div class="mono section-label">☁ REMOTE · ON ORIGIN ONLY</div>
+                {#each remoteOnly as b (b.name)}
+                  <div class="rail-row remote">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" style="flex:none"><path d="M18 10a4 4 0 000-8 5 5 0 00-9.6 1.5A4.5 4.5 0 004 12" /><path d="M6 16h12a3 3 0 000-6H6a3 3 0 000 6z" fill="var(--surface)" /></svg>
+                    <span class="rail-row-name muted-text">{b.name}</span>
+                    <button class="pill-btn outline mono" onclick={() => checkoutRemote(b)}>Check out</button>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+            <div class="rail-foot">
+              <button class="foot-row" title={stashes.join("\n")}>
+                <span class="mr-icon">⬒</span> Stashed changes
+                <span class="mono tiny muted-text pushed-right">{stashes.length}</span>
+              </button>
+              <button class="foot-row" onclick={() => (centerMode = "releases")}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4l-7.2 7.2a2 2 0 01-2.8 0l-7-7a2 2 0 01-.6-1.4V4a1 1 0 011-1h8.2a2 2 0 011.4.6l7 7a2 2 0 010 2.8z" /><circle cx="7.5" cy="7.5" r="1.3" fill="currentColor" /></svg>
+                Tags &amp; releases
+                <span class="mono tiny muted-text pushed-right">{latestTag?.name ?? "none"}</span>
               </button>
             </div>
           </div>
-        {:else}
-          <div class="scroll">
-            {#each commits as commit (commit.hash)}
-              <div class="row commit" class:selected={selectedKey === commit.hash}>
-                <button class="row-main commit-main" onclick={() => selectCommit(commit)}>
-                  <Avatar email={commit.email} name={commit.author} size={24} />
-                  <span class="commit-text">
-                    <span class="commit-subject" title={commit.subject}>{commit.subject}</span>
-                    <span class="commit-meta">
-                      <code>{commit.shortHash}</code>
-                      {commit.author} · {commitDate(commit.date)}
-                      {#if commit.parents.length > 1}· merge{/if}
-                    </span>
+        {/if}
+      </nav>
+
+      <!-- CENTER: history / releases -->
+      <section class="center">
+        <div class="center-head">
+          <div class="seg">
+            <button class:on={centerMode === "history"} onclick={() => (centerMode = "history")}>History</button>
+            <button class:on={centerMode === "releases"} onclick={() => (centerMode = "releases")}>Releases</button>
+          </div>
+          {#if centerMode === "history"}
+            <div class="seg small">
+              <button class:on2={scope === "all"} onclick={() => setScope("all")}>All branches</button>
+              <button class:on2={scope === "current"} onclick={() => setScope("current")}>Current</button>
+            </div>
+          {/if}
+          <span class="spacer"></span>
+          <span class="mono tiny muted-text">
+            {centerMode === "history" ? `${commits.length} commits` : `${tags.length} releases`}
+          </span>
+        </div>
+
+        {#if centerMode === "history"}
+          <div class="center-scroll">
+            {#each commits as c (c.hash)}
+              {@const tip = branchTips.get(c.shortHash) ?? [...branchTips.entries()].find(([h]) => c.hash.startsWith(h))?.[1]}
+              {@const isHead = !!status && status.branch.oid !== "" && c.hash.startsWith(status.branch.oid)}
+              {@const dotColor = c.parents.length > 1 ? "#2f8f5b" : c.localOnly ? currentColor : "#2f5fe0"}
+              <button class="commit-row" class:selected={selectedCommit?.hash === c.hash} onclick={() => selectCommit(c)}>
+                <span class="gutter">
+                  <span class="gutter-line"></span>
+                  <span class="gutter-dot" style="border-color:{dotColor}"></span>
+                </span>
+                <span class="commit-body">
+                  <span class="commit-top">
+                    {#if isHead}<span class="head-tag mono" style="background:{dotColor}">HEAD</span>{/if}
+                    {#if tip && !isHead}<span class="tip-tag mono" style="background:{tip.color}">⎇ {tip.name}</span>{/if}
+                    {#if c.parents.length > 1}<span class="merge-tag mono">⇄ merge</span>{/if}
+                    <span class="commit-msg" class:bold={isHead}>{c.subject}</span>
                   </span>
-                </button>
-              </div>
+                  <span class="commit-meta mono">
+                    <Avatar email={c.email} name={c.author} size={14} />
+                    <span>{c.shortHash}</span><span>·</span><span>{c.author}</span><span>·</span><span>{relTime(c.date)}</span>
+                    {#if c.localOnly}<span class="warn-text">· local only</span>{/if}
+                  </span>
+                </span>
+              </button>
             {:else}
-              <div class="empty-note">No commits yet</div>
+              <div class="empty-note">No commits yet - make your first one on the right.</div>
             {/each}
             {#if commits.length > 0 && !logExhausted}
-              <button class="load-more" disabled={loadingMore} onclick={loadMore}>
+              <button class="load-more btn" disabled={loadingMore} onclick={loadMore}>
                 {loadingMore ? "Loading…" : "Load more"}
               </button>
             {/if}
           </div>
+        {:else}
+          <div class="center-scroll releases">
+            <button class="btn-accent create-release" onclick={openReleaseModal}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              Create a release
+            </button>
+            {#each tags as t, i (t.name)}
+              <div class="release-card">
+                <div class="release-head">
+                  <span class="mono release-version">{t.name}</span>
+                  {#if i === 0}<span class="pill latest mono">LATEST</span>{/if}
+                  <span class="spacer"></span>
+                  <span class="mono tiny muted-text">{relTime(t.date)}</span>
+                </div>
+                <div class="release-title">{t.subject}</div>
+                <div class="release-foot">
+                  <span class="mono tag-chip">◈ tag {t.name}</span>
+                  <span class="mono tiny muted-text">at {t.hash}</span>
+                </div>
+              </div>
+            {:else}
+              <div class="empty-note">No releases yet. A release is a permanent bookmark on one commit - create the first one above.</div>
+            {/each}
+          </div>
         {/if}
       </section>
 
-      <section class="diff-pane">
-        {#if diffTitle}
-          <div class="diff-title" title={diffTitle}>{diffTitle}</div>
-        {/if}
-        {#if details}
-          <div class="details">
-            <div class="details-head">
-              <Avatar email={details.author.email} name={details.author.name} size={40} />
-              <div class="details-who">
-                <span class="details-name">{details.author.name}</span>
-                <a class="details-email" href="mailto:{details.author.email}">
-                  {details.author.email}
-                </a>
-                <span class="details-date">{fullDate(details.author.date)}</span>
-              </div>
-              <div class="details-ids">
-                <code title={details.hash}>{details.shortHash}</code>
-                {#if details.parents.length > 1}<span class="merge-tag">merge</span>{/if}
+      <!-- RIGHT: working / detail -->
+      <section class="right">
+        {#if rightView === "working"}
+          <div class="right-col">
+            <div class="changes-head">
+              <button
+                class="checkbox"
+                class:on={allChecked || someChecked}
+                onclick={toggleAll}
+                aria-label="select all"
+              >
+                {#if allChecked}
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7" /></svg>
+                {:else if someChecked}
+                  <span class="dash"></span>
+                {/if}
+              </button>
+              <span class="mono label">CHANGES</span>
+              {#if changeRows.length > 0}
+                <span class="count-pill mono">{checkedCount}/{changeRows.length}</span>
+              {/if}
+              <span class="spacer"></span>
+              <button class="ghost-btn" onclick={stashAll} disabled={changeRows.length === 0}>Stash all</button>
+            </div>
+
+            <div class="file-list">
+              {#each changeRows as row (row.path)}
+                <div class="file-row" class:dim={!row.checked} class:selected={selectedPath === row.path}>
+                  <button class="checkbox small" class:on={row.checked} onclick={() => toggleRow(row)} aria-label="stage">
+                    {#if row.checked}
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7" /></svg>
+                    {/if}
+                  </button>
+                  <button class="file-main" onclick={() => selectRow(row.path)}>
+                    <span class="badge {row.kind}">{badgeOf(row.kind)}</span>
+                    <span class="file-path mono" class:strike={!row.checked && false}>{row.path}</span>
+                  </button>
+                  <button class="icon-btn" title="Add to .gitignore" onclick={() => ignoreRow(row.path)}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" /><path d="M5.6 5.6l12.8 12.8" /></svg>
+                  </button>
+                  <button class="icon-btn danger" title={row.untracked ? "Delete file" : "Discard changes"} onclick={() => discardRow(row)}>×</button>
+                  <span class="mono tiny add-text">+{row.add}</span>
+                  <span class="mono tiny del-text">-{row.del}</span>
+                </div>
+              {:else}
+                <div class="empty-note">Working tree clean. Edit some files and they'll show up here.</div>
+              {/each}
+              {#if ignoredSession.length > 0}
+                <div class="ignored-strip">
+                  <span class="mono tiny muted-text">⊘ added to .gitignore:</span>
+                  {#each ignoredSession as p (p)}
+                    <span class="mono tiny ignored-chip">
+                      {p}
+                      <button class="link-btn" onclick={() => undoIgnore(p)}>undo</button>
+                    </span>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+
+            <div class="big-diff">
+              {#if selectedRow}
+                <div class="diff-head">
+                  <span class="mono diff-file">{selectedRow.path}</span>
+                  <span class="pill add-pill mono">+{selectedRow.add}</span>
+                  <span class="pill del-pill mono">-{selectedRow.del}</span>
+                  <span class="spacer"></span>
+                  <button class="link-btn mono" onclick={() => openDiffModal(selectedRow!.path, diffText)}>expand ⤢</button>
+                </div>
+              {/if}
+              <div class="diff-scroll">
+                <DiffView diff={diffText} emptyMessage={changeRows.length === 0 ? "Nothing to show" : "Select a file above"} />
               </div>
             </div>
-            {#if details.committer.email !== details.author.email || details.committer.name !== details.author.name}
-              <div class="details-committer">
-                <Avatar email={details.committer.email} name={details.committer.name} size={16} />
-                committed by {details.committer.name}
-                &lt;{details.committer.email}&gt; · {fullDate(details.committer.date)}
+
+            <div class="commit-area">
+              {#if onMain}
+                <div class="guardrail">
+                  <span class="guard-icon">🌱</span>
+                  <div class="guard-body">
+                    <div class="guard-title">You're committing straight to <span class="mono">{status?.branch.head}</span></div>
+                    <div class="guard-sub">Best practice is a branch you can review and undo safely.</div>
+                    {#if bannerNaming}
+                      <form
+                        class="guard-form"
+                        onsubmit={(e) => {
+                          e.preventDefault();
+                          branchFromBanner();
+                        }}
+                      >
+                        <input class="mono" placeholder="feature/my-change" bind:value={bannerBranchName} />
+                        <button type="submit" class="btn-warn">Create &amp; switch</button>
+                      </form>
+                    {:else}
+                      <div class="guard-actions">
+                        <button class="btn-warn" onclick={() => (bannerNaming = true)}>Create branch first</button>
+                        <button class="guard-dismiss" onclick={() => (mainDismissed = true)}>Commit to {status?.branch.head} anyway</button>
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+              {/if}
+              <input
+                class="summary mono"
+                placeholder="Summary (what &amp; why)"
+                bind:value={summary}
+                onkeydown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") doCommit();
+                }}
+              />
+              <button class="commit-btn" disabled={!canCommit} onclick={doCommit}>
+                Commit {checkedCount} file{checkedCount === 1 ? "" : "s"} →
+                <span class="mono" style="color:{currentColor}">{status?.branch.head}</span>
+              </button>
+            </div>
+          </div>
+        {:else}
+          <!-- commit detail -->
+          <div class="right-col">
+            <div class="changes-head">
+              <span class="mono label">COMMIT</span>
+              <span class="mono tiny accent">{selectedCommit?.shortHash}</span>
+              <span class="spacer"></span>
+              <button class="x-btn big" onclick={backToWorking}>×</button>
+            </div>
+            <div class="detail-scroll">
+              <div class="mono section-label">
+                MESSAGE
+                {#if selectedEditable}<span class="accent"> · editable</span>{/if}
               </div>
-            {/if}
-            {#if details.message.includes("\n")}
-              <pre class="details-message">{details.message}</pre>
-            {/if}
-            {#if details.files.length > 0}
-              <div class="details-files">
-                {#each details.files as file (file.path)}
-                  <span class="file-chip">
-                    <span class="badge {file.kind}">{kindBadge(file)}</span>
-                    {#if file.origPath}{file.origPath} → {/if}{file.path}
-                  </span>
+              {#if selectedEditable}
+                <textarea
+                  class="edit-msg"
+                  value={editedMessage ?? details?.message ?? selectedCommit?.subject ?? ""}
+                  oninput={(e) => (editedMessage = e.currentTarget.value)}
+                ></textarea>
+                <div class="edit-actions">
+                  <button class="btn-accent small" onclick={saveMessage} disabled={editedMessage === null}>Save message</button>
+                  <span class="mono tiny muted-text" title="This commit isn't pushed yet, so it's rewritten in place. No history drama.">what happens?</span>
+                </div>
+              {:else}
+                <div class="msg-box">{details?.message ?? selectedCommit?.subject ?? ""}</div>
+                {#if selectedCommit && !selectedCommit.localOnly}
+                  <div class="lock-note">🔒 <span title="This commit is on the remote. Changing it would rewrite shared history.">pushed - editing would rewrite shared history</span></div>
+                {/if}
+              {/if}
+
+              {#if details}
+                <div class="author-row">
+                  <Avatar email={details.author.email} name={details.author.name} size={28} />
+                  <div class="author-col">
+                    <span class="author-name">{details.author.name}</span>
+                    <span class="mono tiny muted-text">{details.author.email} · {relTime(details.author.date)}</span>
+                  </div>
+                </div>
+
+                <div class="mono section-label">FILES · {details.files.length}</div>
+                {#each details.files as f (f.path)}
+                  <div class="detail-file">
+                    <span class="badge {f.kind}">{badgeOf(f.kind)}</span>
+                    <span class="mono file-path">{#if f.origPath}{f.origPath} → {/if}{f.path}</span>
+                    <span class="mono tiny add-text">+{f.additions}</span>
+                    <span class="mono tiny del-text">-{f.deletions}</span>
+                  </div>
                 {/each}
+                <button class="link-btn mono view-patch" onclick={() => openDiffModal(`${selectedCommit?.shortHash} ${selectedCommit?.subject}`, commitDiffText)}>
+                  View full diff ⤢
+                </button>
+              {/if}
+            </div>
+            <div class="undo-area">
+              <div class="mono section-label">UNDO &amp; EDIT</div>
+              <div class="undo-grid">
+                <button class="undo-card" disabled={!selectedEditable} onclick={() => undoLast(true)} title={selectedEditable ? "" : "Only the latest unpushed commit can be undone"}>
+                  <span class="undo-title">↶ Undo, keep changes</span>
+                  <span class="mono tiny muted-text">soft reset · files stay</span>
+                </button>
+                <button class="undo-card danger" disabled={!selectedEditable} onclick={() => undoLast(false)} title={selectedEditable ? "" : "Only the latest unpushed commit can be undone"}>
+                  <span class="undo-title del-text">⌫ Undo &amp; discard</span>
+                  <span class="mono tiny muted-text">hard reset · deletes work</span>
+                </button>
               </div>
-            {/if}
+              <div class="undo-secondary">
+                <button class="btn" onclick={revertSelected}>Revert (safe)</button>
+                <button class="btn" onclick={checkoutHere}>Check out here</button>
+              </div>
+            </div>
           </div>
         {/if}
-        <div class="diff-body">
-          <DiffView
-            diff={diffText}
-            emptyMessage={selectedKey ? "No changes to show" : "Select a file or commit"}
-          />
-        </div>
       </section>
     </div>
   </main>
+
+  <!-- expanded diff modal -->
+  {#if diffModal}
+    <button class="overlay" onclick={() => (diffModal = false)} aria-label="close"></button>
+    <div class="modal diff-modal">
+      <div class="modal-head">
+        <span class="mono diff-file">{diffModalTitle}</span>
+        <span class="spacer"></span>
+        <button class="x-btn big" onclick={() => (diffModal = false)}>×</button>
+      </div>
+      <div class="modal-diff-scroll">
+        <DiffView diff={diffModalText} />
+      </div>
+    </div>
+  {/if}
+
+  <!-- create release modal -->
+  {#if releaseModal}
+    <button class="overlay" onclick={() => (releaseModal = false)} aria-label="close"></button>
+    <div class="modal release-modal">
+      <div class="modal-head">
+        <div class="modal-icon">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4l-7.2 7.2a2 2 0 01-2.8 0l-7-7a2 2 0 01-.6-1.4V4a1 1 0 011-1h8.2a2 2 0 011.4.6l7 7a2 2 0 010 2.8z" /><circle cx="7.5" cy="7.5" r="1.3" fill="var(--accent)" /></svg>
+        </div>
+        <span class="modal-title">Create a release</span>
+        <span class="spacer"></span>
+        <button class="x-btn big" onclick={() => (releaseModal = false)}>×</button>
+      </div>
+      <div class="modal-body">
+        <div class="explainer">
+          <span>💡</span>
+          <div>A release marks a version of your code you can always come back to. Behind the scenes it creates a <span class="mono accent">tag</span>: a permanent bookmark on <b>one commit</b>, like a labeled save point. Unlike a branch, a tag never moves.</div>
+        </div>
+
+        <div class="mono section-label">VERSION</div>
+        <div class="version-row">
+          <span class="mono v-prefix">v</span>
+          <input class="mono version-input" bind:value={version} />
+        </div>
+        <div class="bump-grid">
+          <button class="bump" onclick={() => (version = bumped("patch"))}>
+            <span class="bump-name">Patch</span>
+            <span class="mono tiny muted-text">v{bumped("patch")}</span>
+            <span class="bump-hint">bug fixes</span>
+          </button>
+          <button class="bump" onclick={() => (version = bumped("minor"))}>
+            <span class="bump-name">Minor</span>
+            <span class="mono tiny muted-text">v{bumped("minor")}</span>
+            <span class="bump-hint">new features</span>
+          </button>
+          <button class="bump" onclick={() => (version = bumped("major"))}>
+            <span class="bump-name">Major</span>
+            <span class="mono tiny muted-text">v{bumped("major")}</span>
+            <span class="bump-hint">breaking</span>
+          </button>
+        </div>
+
+        <div class="mono section-label">POINT IT AT</div>
+        <div class="target-row">
+          <span class="dot" style="background:{currentColor}"></span>
+          <span class="target-branch">{status?.branch.head}</span>
+          <span class="mono tiny muted-text">latest commit · {commits[0]?.shortHash ?? ""}</span>
+        </div>
+
+        <div class="mono section-label">TITLE</div>
+        <input class="mono modal-input" placeholder="What would you call this version?" bind:value={relTitle} />
+
+        <div class="notes-head">
+          <span class="mono section-label" style="margin:0">RELEASE NOTES</span>
+          <span class="spacer"></span>
+          <button class="pill-btn mono" onclick={generateNotes}>✨ Generate from commits</button>
+        </div>
+        <textarea class="modal-notes" placeholder="What changed in this version?" bind:value={relNotes}></textarea>
+
+        <label class="toggle-row">
+          <button
+            class="checkbox"
+            class:on={pushTag}
+            onclick={(e) => {
+              e.preventDefault();
+              pushTag = !pushTag;
+            }}
+            aria-label="push tag"
+          >
+            {#if pushTag}
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7" /></svg>
+            {/if}
+          </button>
+          <div class="toggle-body">
+            <div class="toggle-title">Push the tag to origin</div>
+            <div class="mono tiny muted-text">it shows up on GitHub/GitLab under tags (release pages come with forge sign-in, Phase 5)</div>
+          </div>
+        </label>
+
+        <div class="modal-actions">
+          <button class="btn" onclick={() => (releaseModal = false)}>Cancel</button>
+          <button class="btn-accent" onclick={createRelease} disabled={!version.trim()}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4l-7.2 7.2a2 2 0 01-2.8 0l-7-7a2 2 0 01-.6-1.4V4a1 1 0 011-1h8.2a2 2 0 011.4.6l7 7a2 2 0 010 2.8z" /></svg>
+            Create v{version}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 {/if}
 
 <style>
+  /* ---------- theme ---------- */
+  :global(:root) {
+    --desk: #e7e1d7;
+    --bg: #f4f0e9;
+    --surface: #fffefb;
+    --surface2: #faf6ef;
+    --ink: #1c1a16;
+    --ink2: #4a453d;
+    --muted: #8f877b;
+    --border: #e7e1d5;
+    --border2: #d9d2c4;
+    --accent: #2f5fe0;
+    --accent-soft: #e8edfd;
+    --accent-ink: #1e42a8;
+    --clean: #2f8f5b;
+    --clean-soft: #e6f3ea;
+    --warn: #bd7c22;
+    --warn-soft: #fbf0dc;
+    --danger: #c0392b;
+    --danger-soft: #fbe9e7;
+    --add: #2f8f5b;
+    --add-soft: #e7f4ea;
+    --del: #c0392b;
+    --del-soft: #fbe9e7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :global(:root) {
+      --desk: #0e0d0b;
+      --bg: #17150f;
+      --surface: #201d16;
+      --surface2: #28241c;
+      --ink: #f3efe6;
+      --ink2: #c8c1b3;
+      --muted: #8f877a;
+      --border: #312c22;
+      --border2: #3d382c;
+      --accent-soft: #1c2740;
+      --accent-ink: #9db6f5;
+      --clean-soft: #16281d;
+      --warn-soft: #2c2413;
+      --danger-soft: #2e1714;
+      --add-soft: #16281d;
+      --del-soft: #2e1714;
+    }
+  }
   :global(html),
   :global(body) {
     margin: 0;
     height: 100%;
-    background: var(--bg, #0d1117);
-    color: var(--fg, #e6edf3);
-    font-family:
-      -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+  }
+  .spacer {
+    flex: 1;
+  }
+  .label {
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .tiny {
+    font-size: 10px;
+  }
+  .accent {
+    color: var(--accent);
+  }
+  .accent-text {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .muted-text {
+    color: var(--muted);
+  }
+  .warn-text {
+    color: var(--warn);
+    font-weight: 600;
+  }
+  .clean-text {
+    color: var(--clean);
+  }
+  .add-text {
+    color: var(--add);
+  }
+  .del-text {
+    color: var(--del);
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .pushed-right {
+    margin-left: auto;
   }
 
+  /* ---------- buttons ---------- */
+  button {
+    font: inherit;
+    color: inherit;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 38px;
+    padding: 0 14px;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 12.5px;
+    color: var(--ink2);
+    cursor: pointer;
+  }
+  .btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .btn-accent {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    height: 38px;
+    padding: 0 14px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  .btn-accent:hover:not(:disabled) {
+    filter: brightness(1.07);
+  }
+  .btn-accent:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .btn-accent.big {
+    height: 44px;
+    padding: 0 22px;
+    font-size: 14px;
+    box-shadow: 0 6px 16px -6px var(--accent);
+  }
+  .btn-accent.small {
+    height: 30px;
+    padding: 0 11px;
+    font-size: 11px;
+    border-radius: 8px;
+  }
+  .btn-warn {
+    font-weight: 600;
+    font-size: 11px;
+    color: #fff;
+    background: var(--warn);
+    border: none;
+    padding: 6px 11px;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .ghost-btn {
+    font-size: 11px;
+    color: var(--muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+  .ghost-btn:hover:not(:disabled) {
+    color: var(--ink);
+  }
+  .ghost-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .link-btn {
+    font-size: 10px;
+    color: var(--accent);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+  .icon-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    font-size: 13px;
+    line-height: 1;
+  }
+  .icon-btn:hover {
+    color: var(--danger);
+  }
+  .x-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 2px 4px;
+  }
+  .x-btn:hover {
+    color: var(--danger);
+  }
+  .x-btn.big {
+    font-size: 19px;
+  }
+  .x-btn.big:hover {
+    color: var(--ink);
+  }
+  .pill {
+    font-size: 9.5px;
+    padding: 2px 7px;
+    border-radius: 20px;
+  }
+  .pill.clean {
+    color: var(--clean);
+    background: var(--clean-soft);
+  }
+  .pill.muted {
+    color: var(--muted);
+    background: var(--surface2);
+  }
+  .pill.latest {
+    font-size: 9px;
+    font-weight: 700;
+    color: #fff;
+    background: var(--clean);
+  }
+  .tiny-pill {
+    font-size: 8.5px;
+    font-weight: 700;
+    padding: 1px 6px;
+  }
+  .add-pill {
+    color: var(--add);
+    background: var(--add-soft);
+  }
+  .del-pill {
+    color: var(--del);
+    background: var(--del-soft);
+  }
+  .pill-btn {
+    font-size: 8.5px;
+    font-weight: 700;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: none;
+    padding: 2px 7px;
+    border-radius: 20px;
+    cursor: pointer;
+  }
+  .pill-btn.outline {
+    color: var(--ink2);
+    background: var(--surface);
+    border: 1px solid var(--border2);
+  }
+  .pill-btn.outline:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .checkbox {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    padding: 0;
+  }
+  .checkbox.on {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .checkbox .dash {
+    width: 9px;
+    height: 2px;
+    background: #fff;
+    border-radius: 2px;
+  }
+  .checkbox.small {
+    width: 16px;
+    height: 16px;
+  }
+
+  /* ---------- welcome ---------- */
   .welcome {
     height: 100vh;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 0.75rem;
+    gap: 0.8rem;
+    background: radial-gradient(120% 90% at 50% 0%, var(--surface2) 0%, var(--bg) 70%);
+  }
+  .welcome-logo {
+    width: 56px;
+    height: 56px;
+    border-radius: 15px;
+    background: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 12px 30px -10px var(--accent);
   }
   .welcome h1 {
-    font-size: 2.5rem;
+    font-size: 2.4rem;
     margin: 0;
     letter-spacing: -0.02em;
   }
   .welcome p {
-    color: var(--fg-muted, #8b949e);
-    margin: 0 0 1rem;
+    color: var(--muted);
+    margin: 0 0 0.8rem;
   }
   .manual {
     display: flex;
     gap: 0.5rem;
-    margin-top: 0.5rem;
   }
   .manual input {
-    width: 320px;
+    width: 300px;
   }
-
-  .app {
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
+  input,
+  textarea {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 9px;
+    color: var(--ink);
+    padding: 0.45rem 0.7rem;
+    font: inherit;
+    font-size: 12.5px;
+    outline: none;
   }
-  .toolbar {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid var(--border, #30363d);
-    flex: none;
+  input:focus,
+  textarea:focus {
+    border-color: var(--accent);
   }
-  .repo-name {
-    font-weight: 600;
-  }
-  .branch-chip {
-    background: var(--chip, #21262d);
-    border: 1px solid var(--border, #30363d);
-    border-radius: 999px;
-    padding: 0.1rem 0.6rem;
-    font-size: 12px;
-  }
-  .ahead {
-    color: #3fb950;
-    margin-left: 0.3rem;
-  }
-  .behind {
-    color: #f85149;
-    margin-left: 0.3rem;
-  }
-  .upstream {
-    color: var(--fg-muted, #8b949e);
-    font-size: 12px;
-  }
-  .spacer {
-    flex: 1;
-  }
-
-  .columns {
-    flex: 1;
-    display: grid;
-    grid-template-columns: 210px 330px 1fr;
-    min-height: 0;
-  }
-  .sidebar {
-    border-right: 1px solid var(--border, #30363d);
-    overflow-y: auto;
-    padding: 0.5rem 0;
-  }
-  .list-pane {
-    border-right: 1px solid var(--border, #30363d);
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-  .tabs {
-    display: flex;
-    border-bottom: 1px solid var(--border, #30363d);
-    flex: none;
-  }
-  .tabs button {
-    flex: 1;
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--fg-muted, #8b949e);
-    padding: 0.5rem;
-    font-size: 13px;
-    cursor: pointer;
-  }
-  .tabs button.active {
-    color: var(--fg, #e6edf3);
-    border-bottom-color: var(--accent, #58a6ff);
-  }
-  .scroll {
-    overflow-y: auto;
-    flex: 1;
-    padding: 0.25rem 0;
-  }
-
-  .group-title {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--fg-muted, #8b949e);
-    padding: 0.6rem 0.75rem 0.25rem;
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-  .group-title.conflict {
-    color: #f85149;
-  }
-  .count {
-    background: var(--chip, #21262d);
-    border-radius: 999px;
-    padding: 0 0.4rem;
-    font-size: 11px;
-  }
-
-  .row {
-    display: flex;
-    align-items: center;
-    width: 100%;
-    box-sizing: border-box;
-  }
-  .row:hover {
-    background: var(--hover, #161b22);
-  }
-  .row.selected {
-    background: var(--selected, #1f2937);
-  }
-  .row.head {
-    font-weight: 600;
-  }
-  .row.remote {
-    color: var(--fg-muted, #8b949e);
-  }
-  .row-main {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex: 1;
-    min-width: 0;
-    text-align: left;
-    background: none;
-    border: none;
-    color: inherit;
-    padding: 0.3rem 0.75rem;
-    font-size: 13px;
-    cursor: pointer;
-  }
-  .row-main:disabled {
-    cursor: default;
-  }
-  .row-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1;
-  }
-  .static-label {
-    padding: 0.3rem 0.75rem;
-    font-size: 13px;
-  }
-  .row-actions {
-    display: none;
-    gap: 0.2rem;
-    padding-right: 0.5rem;
-    flex: none;
-  }
-  .row:hover .row-actions {
-    display: flex;
-  }
-  .track {
-    font-size: 11px;
-    color: var(--fg-muted, #8b949e);
-    flex: none;
-  }
-
-  .mini {
-    background: var(--chip, #21262d);
-    color: var(--fg, #e6edf3);
-    border: 1px solid var(--border, #30363d);
-    border-radius: 4px;
-    font-size: 12px;
-    line-height: 1;
-    padding: 0.15rem 0.45rem;
-    cursor: pointer;
-  }
-  .mini.danger:hover {
-    background: rgba(248, 81, 73, 0.2);
-    border-color: #f85149;
-  }
-  .mini.link {
-    background: none;
-    border: none;
-    color: var(--accent, #58a6ff);
-    text-transform: none;
-    letter-spacing: normal;
-    padding: 0;
-  }
-  .mini:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  .new-branch {
-    display: flex;
-    gap: 0.3rem;
-    padding: 0.4rem 0.75rem;
-  }
-  .new-branch input {
-    flex: 1;
-    min-width: 0;
-    background: var(--bg, #0d1117);
-    border: 1px solid var(--border, #30363d);
-    border-radius: 4px;
-    color: var(--fg, #e6edf3);
-    padding: 0.2rem 0.4rem;
-    font-size: 12px;
-  }
-
-  .badge {
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
-    font-weight: 700;
-    width: 1.2rem;
-    text-align: center;
-    flex: none;
-    border-radius: 3px;
-  }
-  .badge.modified {
-    color: #d29922;
-  }
-  .badge.added {
-    color: #3fb950;
-  }
-  .badge.deleted {
-    color: #f85149;
-  }
-  .badge.renamed,
-  .badge.copied,
-  .badge.typechange {
-    color: #58a6ff;
-  }
-  .badge.conflictbadge {
-    color: #f85149;
-  }
-
   .recent {
-    margin-top: 1.5rem;
-    width: 420px;
+    margin-top: 1.2rem;
+    width: 430px;
     max-width: 90vw;
-    display: flex;
-    flex-direction: column;
+  }
+  .recent .label {
+    font-size: 9.5px;
+    padding: 0 10px 6px;
+    display: block;
   }
   .recent-row {
     display: flex;
     align-items: baseline;
     gap: 0.6rem;
+    width: 100%;
     background: none;
     border: none;
-    border-radius: 6px;
-    color: var(--fg, #e6edf3);
-    padding: 0.4rem 0.75rem;
-    font-size: 13px;
+    border-radius: 9px;
+    padding: 0.45rem 0.7rem;
     cursor: pointer;
     text-align: left;
   }
   .recent-row:hover {
-    background: var(--hover, #161b22);
+    background: var(--surface);
   }
   .recent-name {
     font-weight: 600;
+    font-size: 13px;
     flex: none;
   }
   .recent-path {
-    color: var(--fg-muted, #8b949e);
-    font-size: 12px;
+    color: var(--muted);
+    font-size: 10.5px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  .row.commit {
-    padding: 0;
+  .error-text {
+    color: var(--danger);
+    font-size: 12.5px;
+    max-width: 460px;
   }
-  .commit-main {
+
+  /* ---------- app frame ---------- */
+  .app {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+  }
+  .toolbar {
+    display: flex;
     align-items: center;
-    gap: 0.6rem;
-    padding: 0.4rem 0.75rem;
-  }
-  .commit-text {
-    display: flex;
-    flex-direction: column;
-    gap: 0.1rem;
-    min-width: 0;
-    flex: 1;
-  }
-  .load-more {
-    display: block;
-    margin: 0.5rem auto 0.75rem;
-    background: var(--chip, #21262d);
-    color: var(--fg, #e6edf3);
-    border: 1px solid var(--border, #30363d);
-    border-radius: 6px;
-    padding: 0.3rem 1rem;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .load-more:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .commit-subject {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    width: 100%;
-  }
-  .commit-meta {
-    font-size: 11px;
-    color: var(--fg-muted, #8b949e);
-  }
-  .commit-meta code {
-    color: var(--accent, #58a6ff);
-    font-size: 11px;
-  }
-
-  .commit-box {
-    border-top: 1px solid var(--border, #30363d);
-    padding: 0.6rem 0.75rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
+    gap: 13px;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface2);
     flex: none;
   }
-  .commit-box textarea {
-    resize: vertical;
-    min-height: 3.2em;
-    background: var(--bg, #0d1117);
-    border: 1px solid var(--border, #30363d);
-    border-radius: 6px;
-    color: var(--fg, #e6edf3);
-    padding: 0.4rem 0.6rem;
-    font-size: 13px;
-    font-family: inherit;
+  .back {
+    font-size: 11px;
+    color: var(--muted);
+    background: none;
+    border: none;
+    cursor: pointer;
   }
-  .subject-wrap {
+  .back:hover {
+    color: var(--ink);
+  }
+  .repo-badge {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .repo-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    background: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+  }
+  .repo-name {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+  }
+  .repo-path {
+    font-size: 10px;
+    color: var(--muted);
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dropdown-anchor {
     position: relative;
+  }
+  .branch-btn {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    height: 38px;
+    padding: 0 12px;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .branch-btn:hover {
+    border-color: var(--muted);
+  }
+  .branch-name {
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .updown {
+    font-size: 10.5px;
+    color: var(--warn);
+  }
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 29;
+    background: none;
+    border: none;
+    cursor: default;
+  }
+  .menu {
+    position: absolute;
+    left: 0;
+    top: 44px;
+    width: 250px;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 12px;
+    box-shadow: 0 20px 44px -18px rgba(40, 34, 22, 0.5);
+    padding: 7px;
+    z-index: 30;
+  }
+  .menu.wide {
+    width: 308px;
+  }
+  .menu.right {
+    left: auto;
+    right: 0;
+  }
+  .menu-label {
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    padding: 6px 9px 7px;
+  }
+  .menu-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 8px 9px;
+    background: none;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: left;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--ink2);
+  }
+  .menu-row:hover {
+    background: var(--surface2);
+  }
+  .menu-row-name {
+    flex: 1;
+    min-width: 0;
+    font-weight: 600;
+    font-size: 12.5px;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .menu-sep {
+    border-top: 1px solid var(--border);
+    margin: 5px 4px;
+  }
+  .menu-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 11px;
+    width: 100%;
+    padding: 10px 11px;
+    background: none;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .menu-card:hover {
+    background: var(--accent-soft);
+  }
+  .menu-card-icon {
+    font-size: 15px;
+    margin-top: 1px;
+  }
+  .menu-card-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .menu-card-title {
+    font-weight: 600;
+    font-size: 12.5px;
+    color: var(--ink);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .menu-card-sub {
+    font-size: 10px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .mr-icon {
+    font-size: 14px;
+  }
+  .new-branch-form {
+    display: flex;
+    gap: 6px;
+    padding: 6px 8px;
+  }
+  .new-branch-form input {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    padding: 0.3rem 0.5rem;
+  }
+  .sync-split {
     display: flex;
   }
-  .subject {
+  .sync-main {
+    border-radius: 10px 0 0 10px;
+  }
+  .sync-caret {
+    width: 30px;
+    padding: 0;
+    border-left: 1px solid rgba(255, 255, 255, 0.28);
+    border-radius: 0 10px 10px 0;
+  }
+
+  .banner {
+    padding: 8px 16px;
+    font-size: 12.5px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .error-banner {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+  .toast-banner {
+    background: var(--clean-soft);
+    color: var(--clean);
+  }
+  .banner-close {
+    margin-left: auto;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: inherit;
+    font-size: 15px;
+  }
+
+  /* ---------- panes ---------- */
+  .panes {
     flex: 1;
-    background: var(--bg, #0d1117);
-    border: 1px solid var(--border, #30363d);
-    border-radius: 6px;
-    color: var(--fg, #e6edf3);
-    padding: 0.4rem 2.6rem 0.4rem 0.6rem;
-    font-size: 13px;
+    display: flex;
+    min-height: 0;
   }
-  .subject-count {
-    position: absolute;
-    right: 0.6rem;
-    top: 50%;
-    transform: translateY(-50%);
-    font-size: 11px;
-    color: var(--fg-muted, #8b949e);
+
+  /* rail */
+  .rail {
+    width: 54px;
+    flex: none;
+    border-right: 1px solid var(--border);
+    background: var(--surface2);
+    overflow: hidden;
+    transition: width 0.2s ease;
   }
-  .subject-count.over {
-    color: #f85149;
+  .rail.expanded {
+    width: 236px;
   }
-  .commit-actions {
+  .rail-collapsed {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 100%;
+    padding: 16px 0 14px;
+    box-sizing: border-box;
+  }
+  .rail-dots {
+    display: flex;
+    flex-direction: column;
+    gap: 13px;
+    align-items: center;
+    margin-top: 18px;
+    flex: 1;
+  }
+  .rail-dot {
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+  .rail-vertical {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    color: var(--muted);
+  }
+  .rail-expanded {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 236px;
+  }
+  .rail-head {
+    padding: 15px 15px 6px;
     display: flex;
     align-items: center;
     justify-content: space-between;
   }
-  .amend {
-    font-size: 12px;
-    color: var(--fg-muted, #8b949e);
+  .plus-btn {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    color: var(--ink2);
+    cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 0.3rem;
-  }
-
-  .diff-pane {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    min-width: 0;
-  }
-  .diff-title {
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid var(--border, #30363d);
-    font-size: 12px;
-    font-family: ui-monospace, monospace;
-    color: var(--fg-muted, #8b949e);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    flex: none;
-  }
-  .diff-body {
-    flex: 1;
-    min-height: 0;
-  }
-
-  .details {
-    border-bottom: 1px solid var(--border, #30363d);
-    padding: 0.75rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    flex: none;
-    max-height: 40%;
-    overflow-y: auto;
-  }
-  .details-head {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-  }
-  .details-who {
-    display: flex;
-    flex-direction: column;
-    gap: 0.1rem;
-    min-width: 0;
-    flex: 1;
-  }
-  .details-name {
-    font-weight: 600;
+    justify-content: center;
     font-size: 14px;
+    line-height: 1;
+    padding: 0;
   }
-  .details-email {
-    color: var(--accent, #58a6ff);
+  .plus-btn:hover {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  .rail-scroll {
+    flex: 1;
+    overflow: auto;
+    padding: 2px 9px 10px;
+  }
+  .section-label {
+    font-size: 9px;
+    letter-spacing: 0.07em;
+    color: var(--muted);
+    padding: 8px 6px 5px;
+    display: block;
+  }
+  .rail-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 9px;
+    margin-bottom: 2px;
+    border-radius: 9px;
+    border: 1px solid transparent;
+  }
+  .rail-row:hover {
+    background: var(--surface);
+  }
+  .rail-row.current {
+    border-color: var(--border2);
+    background: var(--surface);
+    box-shadow: 0 2px 6px -4px rgba(0, 0, 0, 0.28);
+  }
+  .rail-row-main {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    text-align: left;
+  }
+  .rail-row-name {
+    flex: 1;
+    min-width: 0;
+    font-weight: 600;
+    font-size: 12.5px;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .rail-row.remote .rail-row-name {
+    font-weight: 500;
     font-size: 12px;
-    text-decoration: none;
+  }
+  .rail-row .x-btn {
+    display: none;
+  }
+  .rail-row:hover .x-btn {
+    display: block;
+  }
+  .rail-foot {
+    padding: 10px 15px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .foot-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 7px 0;
+    background: none;
+    border: none;
+    color: var(--ink2);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    text-align: left;
+  }
+  .foot-row:hover {
+    color: var(--ink);
+  }
+
+  /* center */
+  .center {
+    flex: 1;
+    min-width: 380px;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+    min-height: 0;
+  }
+  .center-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  .seg {
+    display: flex;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 9px;
+    padding: 2px;
+  }
+  .seg button {
+    padding: 5px 13px;
+    border: none;
+    border-radius: 7px;
+    font-weight: 600;
+    font-size: 12px;
+    cursor: pointer;
+    background: transparent;
+    color: var(--muted);
+  }
+  .seg button.on {
+    background: var(--accent);
+    color: #fff;
+  }
+  .seg.small button {
+    padding: 4px 10px;
+    font-size: 11px;
+  }
+  .seg button.on2 {
+    background: var(--surface2);
+    color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--border2);
+  }
+  .center-scroll {
+    flex: 1;
+    overflow: auto;
+    min-height: 0;
+  }
+  .commit-row {
+    display: flex;
+    width: 100%;
+    background: none;
+    border: none;
+    border-left: 3px solid transparent;
+    cursor: pointer;
+    text-align: left;
+    padding: 0;
+  }
+  .commit-row:hover {
+    background: var(--surface2);
+  }
+  .commit-row.selected {
+    border-left-color: var(--accent);
+    background: var(--surface2);
+  }
+  .gutter {
+    position: relative;
+    width: 44px;
+    flex: none;
+    align-self: stretch;
+  }
+  .gutter-line {
+    position: absolute;
+    left: 21px;
+    top: 0;
+    bottom: 0;
+    width: 2.5px;
+    background: var(--border2);
+  }
+  .gutter-dot {
+    position: absolute;
+    left: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--surface);
+    border: 3px solid var(--accent);
+    box-sizing: border-box;
+  }
+  .commit-body {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+    min-height: 58px;
+    padding: 8px 16px 8px 4px;
+    flex: 1;
+    min-width: 0;
+  }
+  .commit-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .head-tag {
+    font-size: 9px;
+    font-weight: 700;
+    color: #fff;
+    padding: 2px 6px;
+    border-radius: 5px;
+    letter-spacing: 0.03em;
+    flex: none;
+  }
+  .tip-tag {
+    font-size: 9.5px;
+    color: #fff;
+    padding: 1px 8px;
+    border-radius: 20px;
+    flex: none;
+    max-width: 140px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .details-email:hover {
-    text-decoration: underline;
-  }
-  .details-date {
-    color: var(--fg-muted, #8b949e);
-    font-size: 12px;
-  }
-  .details-ids {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    flex: none;
-  }
-  .details-ids code {
-    color: var(--accent, #58a6ff);
-    font-size: 12px;
-    background: var(--chip, #21262d);
-    border-radius: 4px;
-    padding: 0.15rem 0.4rem;
   }
   .merge-tag {
-    font-size: 11px;
-    color: var(--fg-muted, #8b949e);
-    border: 1px solid var(--border, #30363d);
-    border-radius: 999px;
-    padding: 0.05rem 0.5rem;
+    font-size: 9.5px;
+    color: var(--muted);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    padding: 1px 7px;
+    border-radius: 20px;
+    flex: none;
   }
-  .details-committer {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--fg-muted, #8b949e);
-    font-size: 12px;
-  }
-  .details-message {
-    margin: 0;
-    font-family: inherit;
+  .commit-msg {
     font-size: 13px;
-    white-space: pre-wrap;
-    color: var(--fg, #e6edf3);
-    background: var(--chip, #21262d);
-    border-radius: 6px;
-    padding: 0.5rem 0.6rem;
+    font-weight: 500;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .details-files {
+  .commit-msg.bold {
+    font-weight: 600;
+  }
+  .commit-meta {
+    font-size: 10.5px;
+    color: var(--muted);
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-  }
-  .file-chip {
-    display: inline-flex;
     align-items: center;
-    gap: 0.25rem;
-    font-size: 11px;
-    font-family: ui-monospace, monospace;
-    background: var(--chip, #21262d);
-    border: 1px solid var(--border, #30363d);
-    border-radius: 999px;
-    padding: 0.1rem 0.5rem;
-    max-width: 100%;
+    gap: 7px;
+  }
+  .load-more {
+    margin: 10px auto 14px;
+    display: flex;
+  }
+  .empty-note {
+    color: var(--muted);
+    font-size: 12.5px;
+    padding: 1.2rem 1rem;
+    line-height: 1.5;
+  }
+
+  /* releases */
+  .center-scroll.releases {
+    padding: 16px 18px;
+  }
+  .create-release {
+    width: 100%;
+    height: 44px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 12px -6px var(--accent);
+  }
+  .release-card {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 13px;
+    padding: 15px 16px;
+    margin-bottom: 12px;
+  }
+  .release-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .release-version {
+    font-size: 15px;
+    font-weight: 700;
+  }
+  .release-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    margin: 8px 0 4px;
+  }
+  .release-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 11px;
+  }
+  .tag-chip {
+    font-size: 10px;
+    color: var(--muted);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    padding: 3px 8px;
+    border-radius: 6px;
+  }
+
+  /* right pane */
+  .right {
+    width: 472px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    min-height: 0;
+  }
+  .right-col {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+  }
+  .changes-head {
+    padding: 12px 16px 9px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+  }
+  .count-pill {
+    font-size: 10px;
+    color: #fff;
+    background: var(--accent);
+    padding: 1px 7px;
+    border-radius: 20px;
+  }
+  .file-list {
+    max-height: 150px;
+    overflow: auto;
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 6px 9px;
+    border-radius: 8px;
+  }
+  .file-row:hover {
+    background: var(--surface2);
+  }
+  .file-row.selected {
+    background: var(--surface2);
+  }
+  .file-row.dim {
+    opacity: 0.7;
+  }
+  .file-row .icon-btn {
+    visibility: hidden;
+  }
+  .file-row:hover .icon-btn {
+    visibility: visible;
+  }
+  .file-main {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    text-align: left;
+  }
+  .badge {
+    flex: none;
+    width: 19px;
+    height: 19px;
+    border-radius: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "JetBrains Mono", monospace;
+    font-weight: 700;
+    font-size: 10px;
+  }
+  .badge.modified,
+  .badge.typechange {
+    color: var(--warn);
+    background: var(--warn-soft);
+  }
+  .badge.added {
+    color: var(--add);
+    background: var(--add-soft);
+  }
+  .badge.deleted,
+  .badge.conflict {
+    color: var(--del);
+    background: var(--del-soft);
+  }
+  .badge.renamed,
+  .badge.copied {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .file-path {
+    flex: 1;
+    min-width: 0;
+    font-size: 11.5px;
+    color: var(--ink2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ignored-strip {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 7px;
+    padding: 7px 9px;
+  }
+  .ignored-chip {
+    color: var(--ink2);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    padding: 1px 7px;
+    border-radius: 6px;
+    display: inline-flex;
+    gap: 5px;
+  }
+
+  .big-diff {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface2);
+    min-height: 0;
+  }
+  .diff-head {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    position: sticky;
+    top: 0;
+    background: var(--surface2);
+    flex: none;
+  }
+  .diff-file {
+    font-size: 11.5px;
+    color: var(--ink);
+    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  .empty-note {
-    color: var(--fg-muted, #8b949e);
-    font-size: 13px;
-    padding: 1rem 0.75rem;
+  .diff-scroll {
+    flex: 1;
+    overflow: auto;
+    min-height: 0;
   }
 
-  .error {
-    color: #f85149;
-    font-size: 13px;
-    max-width: 480px;
+  .commit-area {
+    border-top: 1px solid var(--border);
+    padding: 11px 14px;
+    flex: none;
   }
-  .error.banner {
-    padding: 0.4rem 0.75rem;
-    background: rgba(248, 81, 73, 0.1);
-    border-bottom: 1px solid var(--border, #30363d);
-    max-width: none;
+  .guardrail {
+    display: flex;
+    gap: 10px;
+    padding: 11px 12px;
+    background: var(--warn-soft);
+    border: 1px solid #ecd39a;
+    border-radius: 11px;
+    margin-bottom: 11px;
   }
-
-  button,
-  input,
-  textarea {
-    font: inherit;
+  .guard-icon {
+    font-size: 15px;
+    line-height: 1.2;
   }
-  button.primary,
-  .manual button,
-  .toolbar button {
-    background: var(--chip, #21262d);
-    color: var(--fg, #e6edf3);
-    border: 1px solid var(--border, #30363d);
-    border-radius: 6px;
-    padding: 0.35rem 0.8rem;
+  .guard-body {
+    flex: 1;
+  }
+  .guard-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #7a5410;
+  }
+  .guard-sub {
+    font-size: 11px;
+    color: #8a6a2a;
+    margin-top: 2px;
+    line-height: 1.45;
+  }
+  .guard-actions {
+    display: flex;
+    gap: 7px;
+    margin-top: 9px;
+    align-items: center;
+  }
+  .guard-dismiss {
+    font-size: 11px;
+    color: #8a6a2a;
+    background: none;
+    border: none;
     cursor: pointer;
-    font-size: 13px;
+    text-decoration: underline;
   }
-  .toolbar button:disabled {
+  .guard-form {
+    display: flex;
+    gap: 7px;
+    margin-top: 9px;
+  }
+  .guard-form input {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    padding: 0.3rem 0.5rem;
+  }
+  .summary {
+    width: 100%;
+    height: 36px;
+    box-sizing: border-box;
+    margin-bottom: 8px;
+    font-size: 12px;
+  }
+  .commit-btn {
+    width: 100%;
+    height: 40px;
+    background: var(--ink);
+    color: var(--bg);
+    border: none;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+  }
+  .commit-btn:hover:not(:disabled) {
+    filter: brightness(1.15);
+  }
+  .commit-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  /* detail view */
+  .detail-scroll {
+    padding: 15px 16px;
+    overflow: auto;
+    flex: 1;
+    min-height: 0;
+  }
+  .edit-msg {
+    width: 100%;
+    min-height: 64px;
+    box-sizing: border-box;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+    font-size: 13px;
+    line-height: 1.5;
+    resize: vertical;
+  }
+  .edit-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0 6px;
+  }
+  .msg-box {
+    padding: 11px 12px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+  .lock-note {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--warn);
+  }
+  .author-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-top: 14px;
+  }
+  .author-col {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+  .author-name {
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .detail-file {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 9px;
+    border-radius: 8px;
+    margin-bottom: 3px;
+    background: var(--surface2);
+  }
+  .detail-file .file-path {
+    font-size: 11px;
+  }
+  .view-patch {
+    margin-top: 10px;
+    font-size: 11px;
+  }
+  .undo-area {
+    border-top: 1px solid var(--border);
+    padding: 12px 14px;
+    background: var(--surface2);
+    flex: none;
+  }
+  .undo-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .undo-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 9px 11px;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .undo-card:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .undo-card.danger:hover:not(:disabled) {
+    border-color: var(--danger);
+    background: var(--danger-soft);
+  }
+  .undo-card:disabled {
     opacity: 0.5;
     cursor: default;
   }
-  button.primary {
-    background: var(--accent-bg, #238636);
-    border-color: transparent;
-    font-size: 14px;
+  .undo-title {
+    font-weight: 600;
+    font-size: 11.5px;
+    color: var(--ink);
   }
-  button.primary:hover:not(:disabled) {
-    background: #2ea043;
+  .undo-secondary {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
   }
-  button.primary:disabled {
-    opacity: 0.5;
+  .undo-secondary .btn {
+    flex: 1;
+    height: 36px;
+    justify-content: center;
+    font-weight: 500;
+    font-size: 11.5px;
+  }
+
+  /* modals */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(28, 26, 22, 0.42);
+    backdrop-filter: blur(2px);
+    z-index: 50;
+    border: none;
     cursor: default;
   }
-  .manual input {
-    background: var(--bg, #0d1117);
-    border: 1px solid var(--border, #30363d);
-    border-radius: 6px;
-    color: var(--fg, #e6edf3);
-    padding: 0.35rem 0.6rem;
-    font-size: 13px;
+  .modal {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 16px;
+    box-shadow: 0 40px 90px -30px rgba(40, 34, 22, 0.6);
+    z-index: 51;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .diff-modal {
+    width: 960px;
+    max-width: 94vw;
+    height: 640px;
+    max-height: 90vh;
+  }
+  .modal-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface2);
+    flex: none;
+  }
+  .modal-diff-scroll {
+    flex: 1;
+    overflow: auto;
+    background: var(--surface2);
+    min-height: 0;
+  }
+  .release-modal {
+    width: 520px;
+    max-width: 94vw;
+    max-height: 88vh;
+  }
+  .modal-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    background: var(--accent-soft);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+  }
+  .modal-title {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .modal-body {
+    padding: 18px 24px 22px;
+    overflow: auto;
+    min-height: 0;
+  }
+  .explainer {
+    display: flex;
+    gap: 11px;
+    padding: 12px 14px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    margin-bottom: 20px;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--ink2);
+  }
+  .version-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 9px;
+  }
+  .v-prefix {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--muted);
+  }
+  .version-input {
+    flex: 1;
+    height: 44px;
+    box-sizing: border-box;
+    font-size: 17px;
+    font-weight: 700;
+  }
+  .bump-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .bump {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 9px 4px;
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .bump:hover {
+    border-color: var(--accent);
+  }
+  .bump-name {
+    font-weight: 600;
+    font-size: 12px;
+  }
+  .bump-hint {
+    font-size: 9.5px;
+    color: var(--muted);
+    margin-top: 3px;
+  }
+  .target-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 42px;
+    padding: 0 13px;
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    margin-bottom: 20px;
+  }
+  .target-branch {
+    font-weight: 600;
+    font-size: 12.5px;
+  }
+  .modal-input {
+    width: 100%;
+    height: 42px;
+    box-sizing: border-box;
+    margin-bottom: 16px;
+  }
+  .notes-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .modal-notes {
+    width: 100%;
+    min-height: 90px;
+    box-sizing: border-box;
+    line-height: 1.6;
+    resize: vertical;
+    margin-bottom: 18px;
+    font-size: 12.5px;
+  }
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 11px 13px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    margin-bottom: 20px;
+  }
+  .toggle-title {
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .toggle-body {
+    flex: 1;
+  }
+  .modal-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+  }
+  .release-modal .section-label {
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    padding: 0;
+    margin-bottom: 8px;
   }
 </style>

@@ -52,6 +52,21 @@ pub struct FileChange {
     /// Original path when the change is a rename or copy.
     pub orig_path: Option<String>,
     pub kind: ChangeKind,
+    /// Line counts from --numstat; 0 for binary files.
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+/// One tag, newest first. Annotated tags surface their own message
+/// subject; lightweight tags fall back to the commit subject.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagInfo {
+    pub name: String,
+    /// Short hash of the commit the tag points at.
+    pub hash: String,
+    pub date: String,
+    pub subject: String,
 }
 
 /// Branch/upstream summary from the `git status` headers.
@@ -90,6 +105,9 @@ pub struct CommitInfo {
     pub date: String,
     pub parents: Vec<String>,
     pub subject: String,
+    /// True when the commit has not reached the branch's upstream yet
+    /// (or the branch has a remote but no upstream at all).
+    pub local_only: bool,
 }
 
 /// Author or committer identity on a commit.

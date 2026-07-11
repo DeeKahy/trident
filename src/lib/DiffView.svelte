@@ -1,78 +1,125 @@
 <script lang="ts">
   let { diff, emptyMessage = "No changes" }: { diff: string; emptyMessage?: string } = $props();
 
-  type LineKind = "add" | "del" | "hunk" | "meta" | "context";
+  type Row = { ln: string; text: string; kind: "add" | "del" | "ctx" | "hunk" | "file" };
 
-  function classify(line: string): LineKind {
-    if (line.startsWith("+++") || line.startsWith("---")) return "meta";
-    if (line.startsWith("@@")) return "hunk";
-    if (line.startsWith("+")) return "add";
-    if (line.startsWith("-")) return "del";
-    if (
-      line.startsWith("diff --git") ||
-      line.startsWith("index ") ||
-      line.startsWith("new file") ||
-      line.startsWith("deleted file") ||
-      line.startsWith("rename ") ||
-      line.startsWith("similarity ")
-    ) {
-      return "meta";
+  // Turn raw unified-diff text into numbered rows: deletions carry the old
+  // line number, additions and context the new one.
+  function parse(raw: string): Row[] {
+    const rows: Row[] = [];
+    let oldLn = 0;
+    let newLn = 0;
+    for (const line of raw.replace(/\n$/, "").split("\n")) {
+      if (line.startsWith("diff --git")) {
+        const m = line.match(/ b\/(.*)$/);
+        rows.push({ ln: "", text: m ? m[1] : line, kind: "file" });
+      } else if (line.startsWith("@@")) {
+        const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
+        if (m) {
+          oldLn = parseInt(m[1]);
+          newLn = parseInt(m[2]);
+          rows.push({ ln: "", text: `⋯${m[3] || ""}`, kind: "hunk" });
+        }
+      } else if (
+        line.startsWith("index ") ||
+        line.startsWith("+++") ||
+        line.startsWith("---") ||
+        line.startsWith("new file") ||
+        line.startsWith("deleted file") ||
+        line.startsWith("similarity") ||
+        line.startsWith("rename") ||
+        line.startsWith("old mode") ||
+        line.startsWith("new mode") ||
+        line.startsWith("Binary files") ||
+        line.startsWith("\\ No newline")
+      ) {
+        continue;
+      } else if (line.startsWith("+")) {
+        rows.push({ ln: String(newLn++), text: line.slice(1), kind: "add" });
+      } else if (line.startsWith("-")) {
+        rows.push({ ln: String(oldLn++), text: line.slice(1), kind: "del" });
+      } else {
+        rows.push({ ln: String(newLn++), text: line.startsWith(" ") ? line.slice(1) : line, kind: "ctx" });
+        oldLn++;
+      }
     }
-    return "context";
+    return rows;
   }
 
-  let lines = $derived(
-    diff
-      .replace(/\n$/, "")
-      .split("\n")
-      .map((text) => ({ text, kind: classify(text) }))
-  );
+  let rows = $derived(diff.trim() === "" ? [] : parse(diff));
 </script>
 
-{#if diff.trim() === ""}
+{#if rows.length === 0}
   <div class="empty">{emptyMessage}</div>
 {:else}
-  <pre class="diff">{#each lines as line}<span class="line {line.kind}">{line.text || " "}
-</span>{/each}</pre>
+  <div class="diff mono">
+    {#each rows as row, i (i)}
+      <div class="line {row.kind}">
+        <span class="ln">{row.ln}</span><span class="text">{row.text || " "}</span>
+      </div>
+    {/each}
+  </div>
 {/if}
 
 <style>
   .diff {
-    margin: 0;
-    padding: 0.75rem;
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
     font-size: 12px;
-    line-height: 1.5;
-    overflow: auto;
-    height: 100%;
-    box-sizing: border-box;
+    line-height: 1.75;
+    padding: 8px 0;
+  }
+  .mono {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
   }
   .line {
-    display: block;
-    white-space: pre;
-    padding: 0 0.5rem;
+    display: flex;
+    padding: 0 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .ln {
+    display: inline-block;
+    width: 38px;
+    text-align: right;
+    padding-right: 14px;
+    color: var(--muted);
+    opacity: 0.65;
+    user-select: none;
+    flex: none;
+  }
+  .text {
+    flex: 1;
+    min-width: 0;
+  }
+  .line.ctx {
+    color: var(--ink2);
   }
   .line.add {
-    background: rgba(63, 185, 80, 0.15);
-    color: var(--diff-add, #3fb950);
+    background: var(--add-soft);
+    color: var(--add);
   }
   .line.del {
-    background: rgba(248, 81, 73, 0.15);
-    color: var(--diff-del, #f85149);
+    background: var(--del-soft);
+    color: var(--del);
   }
   .line.hunk {
-    color: var(--diff-hunk, #58a6ff);
-    background: rgba(88, 166, 255, 0.08);
+    color: var(--muted);
+    padding-top: 4px;
+    padding-bottom: 4px;
   }
-  .line.meta {
-    color: var(--fg-muted, #8b949e);
+  .line.file {
+    color: var(--ink);
+    font-weight: 700;
+    padding-top: 10px;
+    padding-bottom: 2px;
   }
   .empty {
     display: flex;
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: var(--fg-muted, #8b949e);
+    min-height: 120px;
+    color: var(--muted);
     font-size: 13px;
+    font-family: "Space Grotesk", system-ui, sans-serif;
   }
 </style>

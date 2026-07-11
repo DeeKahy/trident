@@ -49,6 +49,48 @@ pub fn commit_diff(repo: &Path, hash: &str) -> Result<String> {
     )
 }
 
+/// Parse `--numstat -z` output into path -> (additions, deletions).
+///
+/// Each NUL token is `ADD\tDEL\tpath`; renames leave the path empty and
+/// send old and new paths as the following two tokens (keyed by new path).
+/// Binary files report `-` and count as 0.
+pub fn parse_numstat(raw: &str) -> std::collections::HashMap<String, (u32, u32)> {
+    let mut map = std::collections::HashMap::new();
+    let mut tokens = raw.split('\0');
+    while let Some(token) = tokens.next() {
+        if token.is_empty() {
+            continue;
+        }
+        let mut cols = token.splitn(3, '\t');
+        let add = cols.next().and_then(|c| c.parse().ok()).unwrap_or(0);
+        let del = cols.next().and_then(|c| c.parse().ok()).unwrap_or(0);
+        let Some(path) = cols.next() else { continue };
+        let key = if path.is_empty() {
+            // Rename: consume the old path, key by the new one.
+            let _old = tokens.next();
+            match tokens.next() {
+                Some(new_path) => new_path.to_string(),
+                None => continue,
+            }
+        } else {
+            path.to_string()
+        };
+        map.insert(key, (add, del));
+    }
+    map
+}
+
+/// Numstat for work-tree changes (staged: index vs HEAD, otherwise
+/// work tree vs index).
+pub fn numstat(repo: &Path, staged: bool) -> Result<std::collections::HashMap<String, (u32, u32)>> {
+    let raw = if staged {
+        run_git_with_ok_codes(repo, &["diff", "--numstat", "-z", "--cached"], &[0, 1])?
+    } else {
+        run_git_with_ok_codes(repo, &["diff", "--numstat", "-z"], &[0, 1])?
+    };
+    Ok(parse_numstat(&raw))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

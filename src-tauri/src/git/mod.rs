@@ -7,11 +7,14 @@
 pub mod branch;
 pub mod commit;
 pub mod diff;
+pub mod ignore;
 pub mod log;
 pub mod remote;
 pub mod repo;
 pub mod stage;
+pub mod stash;
 pub mod status;
+pub mod tag;
 pub mod types;
 
 #[cfg(test)]

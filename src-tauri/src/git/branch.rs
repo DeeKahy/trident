@@ -61,6 +61,12 @@ pub fn switch_branch(repo: &Path, name: &str) -> Result<()> {
     run_git(repo, &["switch", name]).map(|_| ())
 }
 
+/// Check out a commit directly (detached HEAD), e.g. to look around at an
+/// old state without moving any branch.
+pub fn switch_detached(repo: &Path, hash: &str) -> Result<()> {
+    run_git(repo, &["switch", "--detach", hash]).map(|_| ())
+}
+
 /// Delete a local branch. Without `force` this is `git branch -d`, which
 /// refuses to drop unmerged work; `force` is `-D`.
 pub fn delete_branch(repo: &Path, name: &str, force: bool) -> Result<()> {
@@ -171,6 +177,21 @@ mod tests {
 
         let all = branches(repo.path()).unwrap();
         assert!(!all.iter().any(|b| b.name == "doomed"));
+    }
+
+    #[test]
+    fn switch_detached_checks_out_a_commit() {
+        let repo = TestRepo::with_initial_commit();
+        let first = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+        repo.write("a.txt", "a\n");
+        repo.git(&["add", "a.txt"]);
+        repo.commit("second");
+
+        switch_detached(repo.path(), &first).unwrap();
+
+        let info = crate::git::repo::open_repo(repo.path()).unwrap();
+        assert!(info.is_detached);
+        assert!(!repo.path().join("a.txt").exists());
     }
 
     #[test]

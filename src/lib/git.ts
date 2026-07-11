@@ -22,6 +22,15 @@ export interface FileChange {
   path: string;
   origPath: string | null;
   kind: ChangeKind;
+  additions: number;
+  deletions: number;
+}
+
+export interface TagInfo {
+  name: string;
+  hash: string;
+  date: string;
+  subject: string;
 }
 
 export interface BranchStatus {
@@ -48,6 +57,7 @@ export interface CommitInfo {
   date: string;
   parents: string[];
   subject: string;
+  localOnly: boolean;
 }
 
 export interface Signature {
@@ -92,8 +102,8 @@ export function gitStatus(repoPath: string): Promise<Status> {
   return invoke("git_status", { repoPath });
 }
 
-export function gitLog(repoPath: string, limit = 200, skip = 0): Promise<CommitInfo[]> {
-  return invoke("git_log", { repoPath, limit, skip });
+export function gitLog(repoPath: string, limit = 200, skip = 0, all = false): Promise<CommitInfo[]> {
+  return invoke("git_log", { repoPath, limit, skip, all });
 }
 
 export function gitBranches(repoPath: string): Promise<BranchInfo[]> {
@@ -171,6 +181,67 @@ export function gitCommitDetails(repoPath: string, hash: string): Promise<Commit
 /** Start (or move) the backend filesystem watcher to this repo. */
 export function watchRepo(repoPath: string): Promise<void> {
   return invoke("watch_repo", { repoPath });
+}
+
+export function gitUntrackedLines(repoPath: string, path: string): Promise<number> {
+  return invoke("git_untracked_lines", { repoPath, path });
+}
+
+export function gitTags(repoPath: string): Promise<TagInfo[]> {
+  return invoke("git_tags", { repoPath });
+}
+
+export function gitCreateTag(
+  repoPath: string,
+  name: string,
+  message: string,
+  push: boolean
+): Promise<void> {
+  return invoke("git_create_tag", { repoPath, name, message, push });
+}
+
+export function gitStashList(repoPath: string): Promise<string[]> {
+  return invoke("git_stash_list", { repoPath });
+}
+
+export function gitStashAll(repoPath: string, message: string): Promise<void> {
+  return invoke("git_stash_all", { repoPath, message });
+}
+
+export function gitAddIgnore(repoPath: string, path: string): Promise<void> {
+  return invoke("git_add_ignore", { repoPath, path });
+}
+
+export function gitRemoveIgnore(repoPath: string, path: string): Promise<void> {
+  return invoke("git_remove_ignore", { repoPath, path });
+}
+
+export function gitUpdateMerge(repoPath: string): Promise<void> {
+  return invoke("git_update_merge", { repoPath });
+}
+
+export function gitUpdateRebase(repoPath: string): Promise<void> {
+  return invoke("git_update_rebase", { repoPath });
+}
+
+export function gitPublishBranch(repoPath: string, name: string): Promise<void> {
+  return invoke("git_publish_branch", { repoPath, name });
+}
+
+export function gitRewordHead(repoPath: string, message: string): Promise<string> {
+  return invoke("git_reword_head", { repoPath, message });
+}
+
+export function gitUndoLast(repoPath: string, keepChanges: boolean): Promise<void> {
+  return invoke("git_undo_last", { repoPath, keepChanges });
+}
+
+export function gitRevert(repoPath: string, hash: string): Promise<void> {
+  return invoke("git_revert", { repoPath, hash });
+}
+
+export function gitSwitchDetached(repoPath: string, hash: string): Promise<void> {
+  return invoke("git_switch_detached", { repoPath, hash });
 }
 
 /** Render an unknown thrown value (usually a GitError) as a message. */

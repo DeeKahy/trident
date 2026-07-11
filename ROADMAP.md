@@ -84,13 +84,14 @@ The opinionated workflow gets designed here rather than inherited. Sketch the
 guided commit→sync loop on paper first, then implement. The moment this works,
 **develop Trident using Trident.**
 
-- [ ] Sketch the guided commit→sync flow (defaults, guardrails, what makes it easier than Fork)
+- [x] Sketch the guided commit→sync flow (defaults, guardrails, what makes it easier than Fork)
 - [x] Stage / unstage from the UI (per-file; per-hunk can wait)
 - [x] Discard changes with a real confirmation (destructive — design the guardrail)
 - [x] Commit UI: message box, subject/body split, amend
 - [x] Branch create / switch / delete
 - [x] Fetch / pull / push buttons with progress and honest error reporting
-- [ ] The guided sync loop: one obvious "what do I do next" path
+- [x] The guided sync loop: one obvious "what do I do next" path (smart Sync button:
+      fetch, then pull, push, or offer rebase/merge on divergence)
 - [ ] Switch daily driving to Trident (the dogfooding milestone)
 
 ## Phase 4 — The genuinely hard parts
