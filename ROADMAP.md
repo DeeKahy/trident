@@ -133,8 +133,8 @@ The reason Trident exists: first-class GitHub and GitLab support, not just plain
 
 - [ ] Decide: bundle git vs. detect system install (start with detection + a clear
       error when missing; revisit bundling later)
-- [ ] `tauri build` installers for Windows, macOS, Linux
-- [ ] GitHub Actions building all three on every release tag
+- [x] `tauri build` installers for Windows, macOS, Linux
+- [x] GitHub Actions building all three on every release tag
 - [ ] **Code signing**: Apple notarization + Windows signing (budget real time —
       tedious, poorly documented, and it gates scary-warning-free installs)
 - [ ] Tauri auto-updater
