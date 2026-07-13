@@ -1,8 +1,69 @@
+<script lang="ts" module>
+  // Resolve each identity's avatar at most once and remember the outcome, so the
+  // history view re-rendering (or scrolling avatars in and out of view) never
+  // re-hits the network or re-flashes. A cached `null` means "no avatar, use
+  // initials" — the common case for authors whose email has no Gravatar.
+  const cache = new Map<string, string | null>();
+  const inflight = new Map<string, Promise<string | null>>();
+
+  function githubUrl(email: string, px: number): string | null {
+    // GitHub noreply addresses identify the account directly:
+    // "12345+user@users.noreply.github.com" or "user@users.noreply.github.com".
+    const gh = email.match(/^(?:(\d+)\+)?([a-z0-9-]+)@users\.noreply\.github\.com$/i);
+    if (!gh) return null;
+    return gh[1]
+      ? `https://avatars.githubusercontent.com/u/${gh[1]}?s=${px}`
+      : `https://github.com/${gh[2]}.png?size=${px}`;
+  }
+
+  async function gravatarUrl(email: string, px: number): Promise<string> {
+    // Gravatar, used by both GitHub and GitLab accounts that registered one.
+    // d=404 so a missing avatar is a load error we can fall back to initials on.
+    const bytes = new TextEncoder().encode(email.trim().toLowerCase());
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const hex = [...new Uint8Array(digest)]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    return `https://gravatar.com/avatar/${hex}?s=${px}&d=404`;
+  }
+
+  // Load the candidate off-DOM so a missing avatar (Gravatar 404) never appears
+  // as a broken <img> that flashes to initials — we only ever mount an <img>
+  // once it is confirmed to load.
+  function verify(src: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
+      img.src = src;
+    });
+  }
+
+  // Returns the avatar URL to show, or null to fall back to initials. Cached and
+  // de-duplicated per identity so repeated renders are free.
+  function resolveAvatar(email: string, px: number): Promise<string | null> {
+    const key = `${email.trim().toLowerCase()}|${px}`;
+    const cached = cache.get(key);
+    if (cached !== undefined) return Promise.resolve(cached);
+    const existing = inflight.get(key);
+    if (existing) return existing;
+
+    const work = (async () => {
+      const candidate = githubUrl(email, px) ?? (await gravatarUrl(email, px));
+      const resolved = (await verify(candidate)) ? candidate : null;
+      cache.set(key, resolved);
+      inflight.delete(key);
+      return resolved;
+    })();
+    inflight.set(key, work);
+    return work;
+  }
+</script>
+
 <script lang="ts">
   let { email, name, size = 20 }: { email: string; name: string; size?: number } = $props();
 
   let url = $state<string | null>(null);
-  let failed = $state(false);
 
   let initials = $derived(
     name
@@ -17,44 +78,26 @@
   let hue = $derived([...email].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7));
 
   $effect(() => {
-    failed = false;
+    const px = size * 2;
+    // Show initials until (and unless) a real avatar is confirmed to load.
     url = null;
-
-    // GitHub noreply addresses identify the account directly:
-    // "12345+user@users.noreply.github.com" or "user@users.noreply.github.com".
-    const gh = email.match(/^(?:(\d+)\+)?([a-z0-9-]+)@users\.noreply\.github\.com$/i);
-    if (gh) {
-      url = gh[1]
-        ? `https://avatars.githubusercontent.com/u/${gh[1]}?s=${size * 2}`
-        : `https://github.com/${gh[2]}.png?size=${size * 2}`;
-      return;
-    }
-
-    // Anything else: Gravatar (used by both GitHub and GitLab accounts that
-    // registered one), falling back to initials when there is no avatar.
     let cancelled = false;
-    (async () => {
-      const bytes = new TextEncoder().encode(email.trim().toLowerCase());
-      const digest = await crypto.subtle.digest("SHA-256", bytes);
-      const hex = [...new Uint8Array(digest)]
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-      if (!cancelled) url = `https://gravatar.com/avatar/${hex}?s=${size * 2}&d=404`;
-    })();
+    resolveAvatar(email, px).then((resolved) => {
+      if (!cancelled) url = resolved;
+    });
     return () => {
       cancelled = true;
     };
   });
 </script>
 
-{#if url && !failed}
+{#if url}
   <img
     class="avatar"
     src={url}
     alt={name}
     style="width:{size}px;height:{size}px"
     loading="lazy"
-    onerror={() => (failed = true)}
   />
 {:else}
   <span
