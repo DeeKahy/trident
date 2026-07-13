@@ -154,7 +154,13 @@ mod tests {
 
         let normal = diff_file(repo.path(), "f.txt", DiffMode::Worktree, false).unwrap();
         assert!(normal.contains("+CHANGED"), "{normal}");
-        assert!(!normal.contains("keep-top"), "normal diff should trim distant context: {normal}");
+        // keep-bottom sits well below the change; a trimmed-context diff omits
+        // it. (keep-top can't be used here: git echoes the line before the hunk
+        // as its @@ section header, so it appears even when context is trimmed.)
+        assert!(
+            !normal.contains("keep-bottom"),
+            "normal diff should trim distant context: {normal}"
+        );
 
         let full = diff_file(repo.path(), "f.txt", DiffMode::Worktree, true).unwrap();
         assert!(full.contains("+CHANGED"), "{full}");
