@@ -1,6 +1,6 @@
 [package]
 name = "trident"
-version = "0.1.0"
+version = "0.1.1"
 description = "A fast, friendly git client for GitHub and GitLab"
 authors = ["trident contributors"]
 edition = "2021"
