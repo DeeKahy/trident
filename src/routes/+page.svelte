@@ -29,6 +29,9 @@
     gitCreateTag,
     gitStashList,
     gitStashAll,
+    gitStashPop,
+    gitStashApply,
+    gitStashDrop,
     gitAddIgnore,
     gitRemoveIgnore,
     gitUpdateMerge,
@@ -68,7 +71,7 @@
   let railExpanded = $state(false);
   let branchMenu = $state(false);
   let syncMenu = $state(false);
-  let centerMode = $state<"history" | "releases" | "stats">("history");
+  let centerMode = $state<"history" | "releases" | "stats" | "stashes">("history");
   let scope = $state<"all" | "current">("current");
   let stats = $state<CodeStats | null>(null);
   let statsLoading = $state(false);
@@ -540,6 +543,22 @@
 
   async function stashAll() {
     await act(() => gitStashAll(repo!.path, summary.trim()), "Changes stashed safely");
+  }
+
+  // Bring a stash back. "Restore" pops it (applies and removes); "Apply keeps"
+  // a copy on the stack in case you want it again.
+  async function restoreStash(index: number) {
+    await act(() => gitStashPop(repo!.path, index), "Stash restored");
+  }
+  async function applyStash(index: number) {
+    await act(() => gitStashApply(repo!.path, index), "Stash applied (kept a copy)");
+  }
+  async function dropStash(index: number, label: string) {
+    const ok = await confirmDialog(`Delete this stash? This cannot be undone.\n\n${label}`, {
+      title: "Trident",
+    });
+    if (!ok) return;
+    await act(() => gitStashDrop(repo!.path, index), "Stash deleted");
   }
 
   async function doCommit() {
@@ -1017,7 +1036,7 @@
               {/if}
             </div>
             <div class="rail-foot">
-              <button class="foot-row" title={stashes.join("\n")}>
+              <button class="foot-row" class:on={centerMode === "stashes"} title="View and restore stashed changes" onclick={() => (centerMode = "stashes")}>
                 <span class="mr-icon">⬒</span> Stashed changes
                 <span class="mono tiny muted-text pushed-right">{stashes.length}</span>
               </button>
@@ -1051,9 +1070,11 @@
               ? `${commits.length} commits`
               : centerMode === "releases"
                 ? `${tags.length} releases`
-                : stats
-                  ? `${stats.code.toLocaleString()} lines of code`
-                  : ""}
+                : centerMode === "stashes"
+                  ? `${stashes.length} stash${stashes.length === 1 ? "" : "es"}`
+                  : stats
+                    ? `${stats.code.toLocaleString()} lines of code`
+                    : ""}
           </span>
         </div>
 
@@ -1113,6 +1134,27 @@
               </div>
             {:else}
               <div class="empty-note">No releases yet. A release is a permanent bookmark on one commit - create the first one above.</div>
+            {/each}
+          </div>
+        {:else if centerMode === "stashes"}
+          <div class="center-scroll stashes">
+            {#each stashes as s, i (i)}
+              <div class="stash-card">
+                <div class="stash-head">
+                  <span class="mono stash-idx">{`stash@{${i}}`}</span>
+                  {#if i === 0}<span class="pill latest mono">LATEST</span>{/if}
+                  <span class="spacer"></span>
+                </div>
+                <div class="stash-msg">{s}</div>
+                <div class="stash-foot">
+                  <button class="btn-accent small" onclick={() => restoreStash(i)}>Restore</button>
+                  <button class="btn small" title="Restore but keep the stash on the stack" onclick={() => applyStash(i)}>Apply &amp; keep</button>
+                  <span class="spacer"></span>
+                  <button class="btn small danger" onclick={() => dropStash(i, s)}>Drop</button>
+                </div>
+              </div>
+            {:else}
+              <div class="empty-note">No stashes. When you "Stash all" your working changes they park here, and you can bring them back anytime.</div>
             {/each}
           </div>
         {:else}
@@ -1670,6 +1712,16 @@
   .btn:hover {
     border-color: var(--accent);
     color: var(--accent);
+  }
+  .btn.small {
+    height: 30px;
+    padding: 0 11px;
+    font-size: 11px;
+    border-radius: 8px;
+  }
+  .btn.danger:hover {
+    border-color: var(--del);
+    color: var(--del);
   }
   .btn-accent {
     display: inline-flex;
@@ -2265,6 +2317,9 @@
   .foot-row:hover {
     color: var(--ink);
   }
+  .foot-row.on {
+    color: var(--accent);
+  }
 
   /* center */
   .center {
@@ -2563,6 +2618,36 @@
     border: 1px solid var(--border);
     padding: 3px 8px;
     border-radius: 6px;
+  }
+
+  .stash-card {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 13px;
+    padding: 13px 16px;
+    margin-bottom: 12px;
+  }
+  .stash-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .stash-idx {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--muted);
+  }
+  .stash-msg {
+    font-size: 13.5px;
+    font-weight: 600;
+    margin: 8px 0 2px;
+    word-break: break-word;
+  }
+  .stash-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
   }
 
   /* right pane */

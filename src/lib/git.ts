@@ -255,6 +255,21 @@ export function gitStashAll(repoPath: string, message: string): Promise<void> {
   return invoke("git_stash_all", { repoPath, message });
 }
 
+/** Restore stash@{index} and remove it from the stack. */
+export function gitStashPop(repoPath: string, index: number): Promise<void> {
+  return invoke("git_stash_pop", { repoPath, index });
+}
+
+/** Restore stash@{index} but keep it on the stack. */
+export function gitStashApply(repoPath: string, index: number): Promise<void> {
+  return invoke("git_stash_apply", { repoPath, index });
+}
+
+/** Delete stash@{index} without restoring it. */
+export function gitStashDrop(repoPath: string, index: number): Promise<void> {
+  return invoke("git_stash_drop", { repoPath, index });
+}
+
 export function gitAddIgnore(repoPath: string, path: string): Promise<void> {
   return invoke("git_add_ignore", { repoPath, path });
 }

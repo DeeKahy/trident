@@ -122,6 +122,21 @@ pub async fn git_stash_all(repo_path: String, message: String) -> CmdResult<()> 
 }
 
 #[tauri::command]
+pub async fn git_stash_pop(repo_path: String, index: usize) -> CmdResult<()> {
+    stash::stash_pop(&PathBuf::from(repo_path), index)
+}
+
+#[tauri::command]
+pub async fn git_stash_apply(repo_path: String, index: usize) -> CmdResult<()> {
+    stash::stash_apply(&PathBuf::from(repo_path), index)
+}
+
+#[tauri::command]
+pub async fn git_stash_drop(repo_path: String, index: usize) -> CmdResult<()> {
+    stash::stash_drop(&PathBuf::from(repo_path), index)
+}
+
+#[tauri::command]
 pub async fn git_add_ignore(repo_path: String, path: String) -> CmdResult<()> {
     ignore::add_to_gitignore(&PathBuf::from(repo_path), &path)
 }
