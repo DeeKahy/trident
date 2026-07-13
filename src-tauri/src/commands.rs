@@ -72,13 +72,18 @@ pub async fn git_branches(repo_path: String) -> CmdResult<Vec<BranchInfo>> {
 }
 
 #[tauri::command]
-pub async fn git_diff_file(repo_path: String, path: String, mode: DiffMode) -> CmdResult<String> {
-    diff::diff_file(&PathBuf::from(repo_path), &path, mode)
+pub async fn git_diff_file(
+    repo_path: String,
+    path: String,
+    mode: DiffMode,
+    full: bool,
+) -> CmdResult<String> {
+    diff::diff_file(&PathBuf::from(repo_path), &path, mode, full)
 }
 
 #[tauri::command]
-pub async fn git_commit_diff(repo_path: String, hash: String) -> CmdResult<String> {
-    diff::commit_diff(&PathBuf::from(repo_path), &hash)
+pub async fn git_commit_diff(repo_path: String, hash: String, full: bool) -> CmdResult<String> {
+    diff::commit_diff(&PathBuf::from(repo_path), &hash, full)
 }
 
 #[tauri::command]

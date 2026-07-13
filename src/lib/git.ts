@@ -152,12 +152,17 @@ export function gitBranches(repoPath: string): Promise<BranchInfo[]> {
   return invoke("git_branches", { repoPath });
 }
 
-export function gitDiffFile(repoPath: string, path: string, mode: DiffMode): Promise<string> {
-  return invoke("git_diff_file", { repoPath, path, mode });
+export function gitDiffFile(
+  repoPath: string,
+  path: string,
+  mode: DiffMode,
+  full = false
+): Promise<string> {
+  return invoke("git_diff_file", { repoPath, path, mode, full });
 }
 
-export function gitCommitDiff(repoPath: string, hash: string): Promise<string> {
-  return invoke("git_commit_diff", { repoPath, hash });
+export function gitCommitDiff(repoPath: string, hash: string, full = false): Promise<string> {
+  return invoke("git_commit_diff", { repoPath, hash, full });
 }
 
 export function gitStageFile(repoPath: string, path: string): Promise<void> {

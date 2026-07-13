@@ -95,6 +95,11 @@
   let diffModal = $state(false);
   let diffModalTitle = $state("");
   let diffModalText = $state("");
+  // How to re-fetch the open modal's diff at a given context (for the "Full
+  // file" toggle); null when the source can't be reloaded.
+  let diffModalReload = $state<((full: boolean) => Promise<string>) | null>(null);
+  let diffModalFull = $state(false);
+  let diffModalLoading = $state(false);
 
   let releaseModal = $state(false);
   let version = $state("0.1.0");
@@ -794,10 +799,39 @@
     }
   }
 
-  function openDiffModal(title: string, text: string) {
+  function openDiffModal(
+    title: string,
+    text: string,
+    reload: ((full: boolean) => Promise<string>) | null = null
+  ) {
     diffModalTitle = title;
     diffModalText = text;
+    diffModalReload = reload;
+    diffModalFull = false;
+    diffModalLoading = false;
     diffModal = true;
+  }
+
+  // Swap the modal between changed-hunks-only and the whole file.
+  async function toggleDiffFull() {
+    if (!diffModalReload || diffModalLoading) return;
+    const next = !diffModalFull;
+    diffModalLoading = true;
+    try {
+      diffModalText = await diffModalReload(next);
+      diffModalFull = next;
+    } catch (e) {
+      error = errorMessage(e);
+    } finally {
+      diffModalLoading = false;
+    }
+  }
+
+  // Which diff mode a working-tree path is shown in (mirrors loadDiff).
+  function diffModeFor(path: string): DiffMode {
+    const row = changeRows.find((r) => r.path === path);
+    if (row?.untracked) return "untracked";
+    return status?.unstaged.some((f) => f.path === path) ? "worktree" : "staged";
   }
 </script>
 
@@ -1262,7 +1296,7 @@
                   <span class="pill add-pill mono">+{selectedRow.add}</span>
                   <span class="pill del-pill mono">-{selectedRow.del}</span>
                   <span class="spacer"></span>
-                  <button class="link-btn mono" onclick={() => openDiffModal(selectedRow!.path, diffText)}>expand ⤢</button>
+                  <button class="link-btn mono" onclick={() => openDiffModal(selectedRow!.path, diffText, (full) => gitDiffFile(repo!.path, selectedRow!.path, diffModeFor(selectedRow!.path), full))}>expand ⤢</button>
                 </div>
               {/if}
               <div class="diff-scroll">
@@ -1367,7 +1401,7 @@
                     <span class="mono tiny del-text">-{f.deletions}</span>
                   </div>
                 {/each}
-                <button class="link-btn mono view-patch" onclick={() => openDiffModal(`${selectedCommit?.shortHash} ${selectedCommit?.subject}`, commitDiffText)}>
+                <button class="link-btn mono view-patch" onclick={() => openDiffModal(`${selectedCommit?.shortHash} ${selectedCommit?.subject}`, commitDiffText, (full) => gitCommitDiff(repo!.path, selectedCommit!.hash, full))}>
                   View full diff ⤢
                 </button>
               {/if}
@@ -1402,10 +1436,21 @@
       <div class="modal-head">
         <span class="mono diff-file">{diffModalTitle}</span>
         <span class="spacer"></span>
+        {#if diffModalReload}
+          <button
+            class="link-btn mono"
+            class:accent={diffModalFull}
+            onclick={toggleDiffFull}
+            disabled={diffModalLoading}
+            title="Show every line of the file, not just the changes"
+          >
+            {diffModalLoading ? "loading…" : diffModalFull ? "Changes only" : "Full file"}
+          </button>
+        {/if}
         <button class="x-btn big" onclick={() => (diffModal = false)}>×</button>
       </div>
       <div class="modal-diff-scroll">
-        <DiffView diff={diffModalText} />
+        <DiffView diff={diffModalText} collapsible />
       </div>
     </div>
   {/if}

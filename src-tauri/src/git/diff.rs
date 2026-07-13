@@ -21,32 +21,38 @@ pub enum DiffMode {
     Untracked,
 }
 
-/// Unified diff for a single file in the given mode.
-pub fn diff_file(repo: &Path, path: &str, mode: DiffMode) -> Result<String> {
-    // `git diff` exits 1 when differences exist under --no-index; accept it.
+/// A context count large enough that git prints every unchanged line of the
+/// file around the hunks, i.e. the whole file with the changes highlighted.
+/// Passed as `-U<n>` when the caller asks for the "full file" view.
+const FULL_CONTEXT: &str = "-U100000";
+
+/// Unified diff for a single file in the given mode. With `full`, the entire
+/// file is shown (changes in context) rather than just the changed hunks.
+pub fn diff_file(repo: &Path, path: &str, mode: DiffMode, full: bool) -> Result<String> {
+    let mut args: Vec<&str> = vec!["diff", "--no-color"];
+    if full {
+        args.push(FULL_CONTEXT);
+    }
     match mode {
-        DiffMode::Worktree => {
-            run_git_with_ok_codes(repo, &["diff", "--no-color", "--", path], &[0, 1])
-        }
-        DiffMode::Staged => {
-            run_git_with_ok_codes(repo, &["diff", "--no-color", "--cached", "--", path], &[0, 1])
-        }
+        DiffMode::Worktree => args.extend_from_slice(&["--", path]),
+        DiffMode::Staged => args.extend_from_slice(&["--cached", "--", path]),
         // git special-cases the literal path "/dev/null" in --no-index mode
         // (even on Windows), yielding an all-additions diff for a new file.
-        DiffMode::Untracked => run_git_with_ok_codes(
-            repo,
-            &["diff", "--no-color", "--no-index", "/dev/null", path],
-            &[0, 1],
-        ),
+        DiffMode::Untracked => args.extend_from_slice(&["--no-index", "/dev/null", path]),
     }
+    // `git diff` exits 1 when differences exist under --no-index; accept it.
+    run_git_with_ok_codes(repo, &args, &[0, 1])
 }
 
-/// Full patch for a commit (what `git show` prints, without the header).
-pub fn commit_diff(repo: &Path, hash: &str) -> Result<String> {
-    run_git(
-        repo,
-        &["show", "--no-color", "--format=", "--patch", hash],
-    )
+/// Full patch for a commit (what `git show` prints, without the header). With
+/// `full`, every file is shown in its entirety rather than just the hunks.
+pub fn commit_diff(repo: &Path, hash: &str, full: bool) -> Result<String> {
+    let mut args: Vec<&str> = vec!["show", "--no-color", "--format=", "--patch"];
+    if full {
+        args.push(FULL_CONTEXT);
+    }
+    args.push(hash);
+    run_git(repo, &args)
 }
 
 /// Parse `--numstat -z` output into path -> (additions, deletions).
@@ -100,7 +106,7 @@ mod tests {
     fn worktree_diff_shows_the_edit() {
         let repo = TestRepo::with_initial_commit();
         repo.write("README.md", "# test repo\nnew line\n");
-        let d = diff_file(repo.path(), "README.md", DiffMode::Worktree).unwrap();
+        let d = diff_file(repo.path(), "README.md", DiffMode::Worktree, false).unwrap();
         assert!(d.contains("+new line"), "{d}");
         assert!(d.contains("--- a/README.md"), "{d}");
     }
@@ -112,11 +118,11 @@ mod tests {
         repo.git(&["add", "README.md"]);
         repo.write("README.md", "# worktree\n");
 
-        let staged = diff_file(repo.path(), "README.md", DiffMode::Staged).unwrap();
+        let staged = diff_file(repo.path(), "README.md", DiffMode::Staged, false).unwrap();
         assert!(staged.contains("+# staged"), "{staged}");
         assert!(!staged.contains("+# worktree"), "{staged}");
 
-        let worktree = diff_file(repo.path(), "README.md", DiffMode::Worktree).unwrap();
+        let worktree = diff_file(repo.path(), "README.md", DiffMode::Worktree, false).unwrap();
         assert!(worktree.contains("+# worktree"), "{worktree}");
     }
 
@@ -124,7 +130,7 @@ mod tests {
     fn untracked_diff_shows_all_lines_as_additions() {
         let repo = TestRepo::with_initial_commit();
         repo.write("new.txt", "alpha\nbeta\n");
-        let d = diff_file(repo.path(), "new.txt", DiffMode::Untracked).unwrap();
+        let d = diff_file(repo.path(), "new.txt", DiffMode::Untracked, false).unwrap();
         assert!(d.contains("+alpha"), "{d}");
         assert!(d.contains("+beta"), "{d}");
     }
@@ -132,8 +138,28 @@ mod tests {
     #[test]
     fn unchanged_file_diffs_to_empty() {
         let repo = TestRepo::with_initial_commit();
-        let d = diff_file(repo.path(), "README.md", DiffMode::Worktree).unwrap();
+        let d = diff_file(repo.path(), "README.md", DiffMode::Worktree, false).unwrap();
         assert!(d.is_empty());
+    }
+
+    #[test]
+    fn full_context_diff_includes_unchanged_lines() {
+        let repo = TestRepo::with_initial_commit();
+        // A file whose changed line sits far from surrounding context lines that
+        // a normal 3-line diff would omit but a full-file diff must include.
+        repo.write("f.txt", "keep-top\na\nb\nc\nd\ne\nf\ng\nkeep-bottom\n");
+        repo.git(&["add", "f.txt"]);
+        repo.commit("add f.txt");
+        repo.write("f.txt", "keep-top\na\nb\nc\nCHANGED\ne\nf\ng\nkeep-bottom\n");
+
+        let normal = diff_file(repo.path(), "f.txt", DiffMode::Worktree, false).unwrap();
+        assert!(normal.contains("+CHANGED"), "{normal}");
+        assert!(!normal.contains("keep-top"), "normal diff should trim distant context: {normal}");
+
+        let full = diff_file(repo.path(), "f.txt", DiffMode::Worktree, true).unwrap();
+        assert!(full.contains("+CHANGED"), "{full}");
+        assert!(full.contains("keep-top"), "full diff should show the whole file: {full}");
+        assert!(full.contains("keep-bottom"), "{full}");
     }
 
     #[test]
@@ -143,7 +169,7 @@ mod tests {
         repo.git(&["add", "a.txt"]);
         repo.commit("add a.txt");
         let head = repo.git(&["rev-parse", "HEAD"]);
-        let d = commit_diff(repo.path(), head.trim()).unwrap();
+        let d = commit_diff(repo.path(), head.trim(), false).unwrap();
         assert!(d.contains("+hello"), "{d}");
         assert!(d.contains("a.txt"), "{d}");
     }
@@ -151,6 +177,6 @@ mod tests {
     #[test]
     fn commit_diff_on_bad_hash_errors() {
         let repo = TestRepo::with_initial_commit();
-        assert!(commit_diff(repo.path(), "deadbeef").is_err());
+        assert!(commit_diff(repo.path(), "deadbeef", false).is_err());
     }
 }
